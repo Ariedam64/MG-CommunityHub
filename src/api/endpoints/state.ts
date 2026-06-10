@@ -312,7 +312,7 @@ export async function buildPlayerStatePayload(
       null;
 
     const localVersion = getLocalVersion();
-    const modVersion = localVersion ? `Arie's mod ${localVersion}` : null;
+    const modVersion = localVersion ? `Community Hub ${localVersion}` : null;
 
     const payload: PlayerStatePayload = {
       playerName: playerName ?? null,
