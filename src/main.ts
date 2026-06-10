@@ -21,6 +21,7 @@ import { pageWindow, shareGlobal } from "@/platform/page-context";
 import { MGVersion } from "@/platform/mgVersion";
 import { MGData } from "@/data/dynamic";
 import { warmupSpriteCache } from "@/ui/spriteIcons";
+import { tos } from "@/game/tileObjectSystem";
 import { renderCommunityHub } from "@/ui/hub";
 
 (function () {
@@ -44,6 +45,12 @@ import { renderCommunityHub } from "@/ui/hub";
   MGVersion.prefetch();
   try {
     warmupSpriteCache();
+  } catch {}
+
+  // Tile object system hook — needed by the friend garden preview to sync
+  // tiles visually. Must install before the game engine initializes.
+  try {
+    tos.init();
   } catch {}
 
   // An Arie's Mod old enough to still embed the Community Hub renders it via

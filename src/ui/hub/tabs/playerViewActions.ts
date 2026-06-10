@@ -2,6 +2,36 @@
 import type { PlayerView } from "@/api";
 import { fetchPlayerJournal } from "@/api";
 import { style, ensureSharedStyles, CH_EVENTS } from "../shared";
+import { pageWindow } from "@/platform/page-context";
+import {
+  applyFriendGardenPreview,
+  clearFriendGardenPreview,
+} from "@/game/gardenPreview";
+
+// Garden preview implementation resolution. When Arie's Mod runs alongside,
+// prefer its qwsEditor* globals (its editor coordinates the preview with its
+// own state-freeze logic); otherwise fall back to our local implementation.
+// apply/clear MUST come from the same implementation: the garden backup lives
+// in module state on whichever side performed the apply.
+type GardenPreviewImpl = {
+  apply: (garden: unknown) => Promise<boolean>;
+  clear: () => Promise<boolean>;
+};
+
+let activeGardenPreviewImpl: GardenPreviewImpl | null = null;
+
+function resolveGardenPreviewImpl(): GardenPreviewImpl {
+  const w = pageWindow as unknown as Record<string, unknown>;
+  const ariesApply = w.qwsEditorPreviewFriendGarden;
+  const ariesClear = w.qwsEditorClearFriendGardenPreview;
+  if (typeof ariesApply === "function" && typeof ariesClear === "function") {
+    return {
+      apply: (garden) => Promise.resolve((ariesApply as (g: unknown) => Promise<boolean>)(garden)),
+      clear: () => Promise.resolve((ariesClear as () => Promise<boolean>)()),
+    };
+  }
+  return { apply: applyFriendGardenPreview, clear: clearFriendGardenPreview };
+}
 
 // ===== Preview Modal Management =====
 
@@ -167,19 +197,16 @@ export async function viewGarden(player: PlayerView): Promise<void> {
 
   const garden = state.garden;
 
-  // Call the global preview function (from EditorService)
-  const previewFn = (window as any).qwsEditorPreviewFriendGarden;
-  if (typeof previewFn !== "function") {
-    console.error("[PlayerViewActions] qwsEditorPreviewFriendGarden not available");
-    return;
-  }
+  // Arie's Mod editor globals when available, local fallback otherwise
+  const impl = resolveGardenPreviewImpl();
 
   try {
-    const success = await previewFn(garden);
+    const success = await impl.apply(garden);
     if (!success) {
       console.error("[PlayerViewActions] Failed to preview garden");
       return;
     }
+    activeGardenPreviewImpl = impl;
 
     // Show modal
     showPreviewModal("garden", player.playerName || "Unknown", async () => {
@@ -194,14 +221,11 @@ export async function viewGarden(player: PlayerView): Promise<void> {
  * Stop garden preview
  */
 export async function stopViewGarden(): Promise<void> {
-  const clearFn = (window as any).qwsEditorClearFriendGardenPreview;
-  if (typeof clearFn !== "function") {
-    console.error("[PlayerViewActions] qwsEditorClearFriendGardenPreview not available");
-    return;
-  }
+  const impl = activeGardenPreviewImpl ?? resolveGardenPreviewImpl();
+  activeGardenPreviewImpl = null;
 
   try {
-    await clearFn();
+    await impl.clear();
     hidePreviewModal();
   } catch (error) {
     console.error("[PlayerViewActions] Error stopping garden preview:", error);
