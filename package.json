@@ -1,0 +1,18 @@
+{
+  "name": "mg-community-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/tampermonkey": "^5.0.4",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "emoji-picker-element": "^1.29.1"
+  }
+}
