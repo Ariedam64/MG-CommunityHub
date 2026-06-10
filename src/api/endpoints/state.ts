@@ -3,7 +3,7 @@
 
 import { Atoms, playerDatabaseUserId } from "@/store/atoms";
 import type { GardenState } from "@/store/atoms";
-import { shareGlobal } from "@/platform/page-context";
+import { shareGlobal, pageWindow } from "@/platform/page-context";
 import { readAriesPath, hasApiKey } from "@/storage/storage";
 import { getLocalVersion } from "@/platform/version";
 import { httpPost } from "../client/http";
@@ -469,6 +469,20 @@ export function startPlayerStateReportingWhenGameReady(intervalMs?: number): voi
   });
 }
 
+// Collect-state ownership: Arie's Mod claims this page global when it starts
+// its own heartbeat. It has priority — when the global is set, this mod's
+// heartbeat stands down (checked at startup AND on every tick, so the load
+// order between the two mods does not matter).
+const COLLECT_STATE_OWNER_GLOBAL = "__MG_COLLECT_STATE_OWNER__";
+
+function isCollectStateOwnedElsewhere(): boolean {
+  try {
+    return !!(pageWindow as unknown as Record<string, unknown>)[COLLECT_STATE_OWNER_GLOBAL];
+  } catch {
+    return false;
+  }
+}
+
 // Heartbeat state
 let payloadReportingTimer: ReturnType<typeof setInterval> | null = null;
 let isPayloadReporting = false;
@@ -478,6 +492,11 @@ let initialSendRetries = 0;
 const MAX_INITIAL_RETRIES = 3;
 
 async function buildAndSendPlayerState(): Promise<void> {
+  if (isCollectStateOwnedElsewhere()) {
+    // Arie's Mod runs alongside and owns the heartbeat: stop ours for good.
+    stopPlayerStateReporting();
+    return;
+  }
   if (isPayloadReporting) return;
   isPayloadReporting = true;
   try {
