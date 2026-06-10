@@ -22,4 +22,6 @@
 // @connect      cdn.jsdelivr.net
 // @connect      magicgarden.gg
 // @connect      storage.ko-fi.com
+// @downloadURL  https://github.com/Ariedam64/MG-CommunityHub/raw/refs/heads/main/dist/mg-community-hub.user.js
+// @updateURL    https://github.com/Ariedam64/MG-CommunityHub/raw/refs/heads/main/dist/mg-community-hub.user.js
 // ==/UserScript==

@@ -1,4 +1,8 @@
 node_modules/
-dist/
 *.log
 .env
+
+# dist: only the public build is committed (distributed via raw GitHub URL);
+# the dev build stays local.
+dist/*
+!dist/mg-community-hub.user.js

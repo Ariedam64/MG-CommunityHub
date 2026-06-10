@@ -34,10 +34,11 @@ async function readDotEnv() {
 const dotEnv = await readDotEnv();
 const buildDev = isWatch || dotEnv.BUILD_DEV === '1' || process.env.BUILD_DEV === '1';
 
-const devMeta = meta.replace(
-  /^(\/\/ @name\s+).*$/m,
-  '$1MG Community Hub (DEV)',
-);
+// Dev header: distinct name, and no update URLs (they point to the public
+// build — the dev script must never auto-update into it).
+const devMeta = meta
+  .replace(/^(\/\/ @name\s+).*$/m, '$1MG Community Hub (DEV)')
+  .replace(/^\/\/ @(downloadURL|updateURL)\s+.*\r?\n/gm, '');
 
 function makeOptions(dev) {
   return {
