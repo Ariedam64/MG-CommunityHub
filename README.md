@@ -1,52 +1,21 @@
 # MG Community Hub
 
-Community Hub for **Magic Garden / Magic Circle** — friends, messages, groups,
-leaderboards, public rooms and chat importing, as a standalone userscript.
-Companion of [Arie's Mod](https://github.com/Ariedam64/MG-AriesMod): both work
-on their own and side by side (they share the game store capture and game data
-through cross-mod page globals).
+A social hub for **Magic Garden / Magic Circle**, right inside the game. Add friends and see what they're up to, chat with them in DMs or groups, browse public rooms to find people to play with, climb the leaderboards and show off your profile. It also works in the Discord Activity.
+
+It's the standalone version of the Community Hub from [Arie's Mod](https://github.com/Ariedam64/MG-AriesMod). You can run it alone or alongside Arie's Mod, both play nice together. If you used the hub inside Arie's Mod before, your Discord login and settings carry over automatically.
 
 ## Install
 
-1. Install a userscript manager: [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/).
-2. Install the script: **[mg-community-hub.user.js](https://github.com/Ariedam64/MG-CommunityHub/raw/refs/heads/main/dist/mg-community-hub.user.js)**
-3. Open the game — a Community Hub button appears in the toolbar.
+1. Get [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)
+2. Click here: **[mg-community-hub.user.js](https://github.com/Ariedam64/MG-CommunityHub/raw/refs/heads/main/dist/mg-community-hub.user.js)**
+3. Open the game and look for the new button in the toolbar. That's it!
 
-Supported surfaces: magicgarden.gg, magiccircle.gg, starweaver.org and the
-Discord Activity.
-
-If you were using the hub inside Arie's Mod before: your Discord login and
-settings are kept automatically.
-
-## Development
+## For devs
 
 ```bash
 npm install
-cp .env.example .env   # BUILD_DEV=1 → also produces the dev build
-npm run build          # dist/mg-community-hub.user.js (+ .dev.user.js)
-npm run watch          # rebuilds the dev build on change
-npm run typecheck
+cp .env.example .env
+npm run watch
 ```
 
-Two build channels from the same source (esbuild `define` `__HUB_DEV_BUILD__`):
-
-| Channel | File | Notes |
-|---|---|---|
-| public | `dist/mg-community-hub.user.js` | distributed build |
-| dev | `dist/mg-community-hub.dev.user.js` | adds dev-only tooling (Search tab), local only |
-
-For local development, point a loader userscript at the dev build:
-
-```
-// @require file://<repo>/dist/mg-community-hub.dev.user.js
-```
-
-## Repo map
-
-- `src/main.ts` — boot sequence
-- `src/api/` — backend client (auth, endpoints, SSE/long-poll streams, caches)
-- `src/store/` — jotai store capture + `__MG_STORE_BRIDGE__` cross-mod sharing
-- `src/data/` — game catalogs (mg-api, hardcoded fallback)
-- `src/game/` — minimal game-side helpers (fake modals, garden preview, TOS hook)
-- `src/ui/` — toolbar button, hub panel and tabs
-- `src/storage/` — persistence (`mgch_hub` blob, shared `aries_api_key`)
+This builds two scripts: the public one (`dist/mg-community-hub.user.js`) and a dev one with extra tooling (`dist/mg-community-hub.dev.user.js`, needs `BUILD_DEV=1` in your `.env`). Load the dev one with a `@require file://...` userscript while working.
