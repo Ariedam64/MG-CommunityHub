@@ -18,13 +18,9 @@ const RAIL_LABEL = "RightSideRail";
 const RAIL_FIND_RETRY_MS = 1000;
 const RAIL_FIND_LOG_EVERY = 30;
 
-// Same "two people" glyph as the old DOM button, rasterized at 128×128 (well
-// above its 24×24 viewBox) so it stays crisp once Pixi scales the resulting
-// texture up to icon size, including on hi-DPI displays.
-const DEFAULT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
+const DEFAULT_ICON_GLYPH = "\u{1F465}"; // 👥
 const DEFAULT_SLOT_SIZE = 45;
 const DEFAULT_SLOT_SPACING = 52;
-const ICON_SIZE_RATIO = 0.55;
 
 export interface ScreenRect {
   left: number;
@@ -37,8 +33,8 @@ export interface ScreenRect {
 
 export interface CommunityHubButtonPixiOptions {
   onClick: () => void;
-  /** Icon SVG markup, rendered as a real Pixi sprite. Defaults to a "people" icon. */
-  iconSvg?: string;
+  /** Glyph drawn as the icon. Defaults to a people emoji. */
+  iconGlyph?: string;
   /** Fired whenever the button's on-screen position/size may have changed. */
   onGeometryChanged?: () => void;
 }
@@ -61,22 +57,13 @@ export function startCommunityHubButtonPixi(
 ): CommunityHubButtonPixiController {
   startPixiCapture();
 
-  const iconSvg = opts.iconSvg ?? DEFAULT_ICON_SVG;
-  const iconDataUrl = `data:image/svg+xml;base64,${btoa(iconSvg)}`;
+  const iconGlyph = opts.iconGlyph ?? DEFAULT_ICON_GLYPH;
 
   let running = true;
   let rail: any = null;
   let buttonContainer: any = null;
-  let buttonIcon: any = null;
+  let buttonText: any = null;
   let lastSize = DEFAULT_SLOT_SIZE;
-
-  // The icon is loaded once (decoding an SVG data URL is effectively
-  // synchronous, no network involved) and reused as a texture across
-  // rail re-attachments — only the Sprite instance needs recreating.
-  let iconImage: HTMLImageElement | null = null;
-  let iconImageLoading = false;
-  let iconImageFailed = false;
-  let iconTexture: any = null;
 
   let findAttempts = 0;
   let findRafId: number | null = null;
@@ -103,26 +90,8 @@ export function startCommunityHubButtonPixi(
 
   const forgetButtonRefs = () => {
     buttonContainer = null;
-    buttonIcon = null;
+    buttonText = null;
     debugState.hasButton = false;
-  };
-
-  const ensureIconImage = (): void => {
-    if (iconImage || iconImageLoading || iconImageFailed) return;
-    iconImageLoading = true;
-    const img = new Image();
-    img.decoding = "async";
-    img.onload = () => {
-      iconImage = img;
-      iconImageLoading = false;
-      sync();
-    };
-    img.onerror = () => {
-      iconImageLoading = false;
-      iconImageFailed = true;
-      console.warn("[communityHubButtonPixi] icon image failed to load");
-    };
-    img.src = iconDataUrl;
   };
 
   const removeButton = () => {
@@ -255,11 +224,10 @@ export function startCommunityHubButtonPixi(
     const { size, nextY } = computeSlot();
     lastSize = size;
     buttonContainer.position.set(0, nextY);
-    if (buttonIcon) {
-      const iconSize = Math.round(size * ICON_SIZE_RATIO);
-      buttonIcon.width = iconSize;
-      buttonIcon.height = iconSize;
-      buttonIcon.position.set(size / 2, size / 2);
+    if (buttonText) {
+      buttonText.style.fontSize = Math.round(size * 0.6);
+      if (typeof buttonText.anchor?.set === "function") buttonText.anchor.set(0.5);
+      buttonText.position.set(size / 2, size / 2);
     }
   };
 
@@ -269,10 +237,7 @@ export function startCommunityHubButtonPixi(
       return;
     }
     const state = getPixiCaptureState();
-    if (!state?.ctors?.Sprite || !state?.ctors?.Texture) return;
-
-    ensureIconImage();
-    if (!iconImage) return; // sync() re-runs once the icon image (onload) is ready
+    if (!state?.ctors?.Text) return;
 
     if (!buttonContainer) {
       const ContainerCtor = state.ctors.Container ?? rail.constructor;
@@ -288,17 +253,9 @@ export function startCommunityHubButtonPixi(
       rail.addChild(buttonContainer);
     }
 
-    if (!buttonIcon) {
-      if (!iconTexture) iconTexture = state.ctors.Texture.from(iconImage);
-      buttonIcon = new state.ctors.Sprite(iconTexture);
-      if (typeof buttonIcon.anchor?.set === "function") buttonIcon.anchor.set(0.5);
-      // Sized to the last known slot immediately, not left at the texture's
-      // native (larger) pixel size — syncGeometry() below refines this, but
-      // computeSlot() also runs before that on later syncs and must never
-      // see this sprite at its raw texture size.
-      buttonIcon.width = lastSize * ICON_SIZE_RATIO;
-      buttonIcon.height = lastSize * ICON_SIZE_RATIO;
-      buttonContainer.addChild(buttonIcon);
+    if (!buttonText) {
+      buttonText = new state.ctors.Text({ text: iconGlyph, style: { fontSize: DEFAULT_SLOT_SIZE } });
+      buttonContainer.addChild(buttonText);
     }
 
     ensureCanvasListeners(state);

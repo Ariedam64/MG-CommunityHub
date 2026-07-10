@@ -11,8 +11,8 @@
 // If Arie's Mod is also running, it already exposes this exact shape on
 // `__MG_SPRITE_STATE__` (a much heavier boot that also loads the sprite
 // atlas) — reuse it instead of deriving our own. Running standalone, this
-// module does its own minimal capture: just enough to draw text/sprites in
-// the game's scene graph, no atlas/texture loading involved.
+// module does its own minimal capture: just enough to draw text in the
+// game's scene graph, no atlas/texture loading involved.
 import { pageWindow, shareGlobal, readSharedGlobal } from "./page-context";
 import { sleep } from "./mgCommon";
 import { findAcrossBranches } from "./pixiTree";
@@ -20,8 +20,6 @@ import { findAcrossBranches } from "./pixiTree";
 export interface PixiCaptureCtors {
   Text: any;
   Container: any;
-  Sprite: any;
-  Texture: any;
 }
 
 export interface PixiCaptureState {
@@ -69,21 +67,6 @@ function findTextCtor(stage: any): any {
   return loose?.constructor ?? null;
 }
 
-/**
- * Finds any live Sprite-like node (the game's world is full of them —
- * plants, tiles, pets) to borrow its constructor and its texture's
- * constructor from, so we can build our own `Texture.from(image)` +
- * `new Sprite(texture)` for a custom icon.
- */
-function findSpriteCtors(stage: any): { Sprite: any; Texture: any } | null {
-  const node = findAcrossBranches(
-    stage,
-    (n: any) => !!(n?.texture?.frame && n?.constructor && n?.texture?.constructor),
-  );
-  if (!node) return null;
-  return { Sprite: node.constructor, Texture: node.texture.constructor };
-}
-
 function fastCheckPixi(): { app: any; renderer: any } | null {
   const root = pageWindow as any;
   const app = root.__PIXI_APP__ || root.PIXI_APP || root.app || null;
@@ -123,16 +106,11 @@ export function getStage(state: PixiCaptureState): any {
 
 export function getPixiCaptureState(): PixiCaptureState | null {
   const shared = readSharedGlobal<any>("__MG_SPRITE_STATE__");
-  if (shared?.renderer && shared?.ctors?.Text && shared?.ctors?.Sprite && shared?.ctors?.Texture) {
+  if (shared?.renderer && shared?.ctors?.Text) {
     return {
       renderer: shared.renderer,
       app: shared.app ?? null,
-      ctors: {
-        Text: shared.ctors.Text,
-        Container: shared.ctors.Container ?? null,
-        Sprite: shared.ctors.Sprite,
-        Texture: shared.ctors.Texture,
-      },
+      ctors: { Text: shared.ctors.Text, Container: shared.ctors.Container ?? null },
     };
   }
   return readSharedGlobal<PixiCaptureState>(STATE_GLOBAL) ?? null;
@@ -166,11 +144,10 @@ export function startPixiCapture(): void {
       }
       const stage = latestApp?.stage ?? latestRenderer?.lastObjectRendered ?? latestRenderer?.stage ?? null;
       const textCtor = stage ? findTextCtor(stage) : null;
-      const spriteCtors = stage ? findSpriteCtors(stage) : null;
-      if (textCtor && spriteCtors) {
+      if (textCtor) {
         state.renderer = latestRenderer;
         state.app = latestApp;
-        state.ctors = { Text: textCtor, Container: stage.constructor, ...spriteCtors };
+        state.ctors = { Text: textCtor, Container: stage.constructor };
         return;
       }
       await sleep(CTORS_RETRY_MS);
