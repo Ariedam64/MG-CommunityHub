@@ -5,7 +5,10 @@ import { createGroupsTab } from "./tabs/groupsTab";
 import { createLeaderboardTab } from "./tabs/leaderboardTab";
 import { createSearchTab } from "./tabs/searchTab";
 import { createMyProfileTab } from "./tabs/myProfileTab";
-import { startInjectGamePanelButton } from "@/ui/toolbarButton";
+import {
+  startCommunityHubButtonPixi,
+  type CommunityHubButtonPixiController,
+} from "@/ui/communityHubButtonPixi";
 import { style, CH_EVENTS, ensureSharedStyles } from "./shared";
 import { getTotalFriendUnreadCount, getTotalGroupUnreadCount, getIncomingRequestsCount, hasApiKey } from "@/api";
 import {
@@ -197,7 +200,7 @@ class CommunityHub {
   private navBadges = new Map<TabId, HTMLSpanElement>();
   private activeTab: TabId = "community";
   private panelOpen = false;
-  private cleanupToolbarButton: (() => void) | null = null;
+  private hubButtonPixi: CommunityHubButtonPixiController | null = null;
   private kofiModal: HTMLElement | null = null;
   private kofiNavBtn: HTMLButtonElement | null = null;
   // Safety flags to prevent stale/destroyed instances from acting on events
@@ -245,21 +248,15 @@ class CommunityHub {
   private handlePointerDown = (e: PointerEvent) => {
     if (this.destroyed || !this.panelOpen) return;
     const t = e.target as Node;
-    if (!this.slot.contains(t) && !this.isClickOnToolbarButton(e.target as Node)) {
+    if (!this.slot.contains(t) && !this.isClickOnHubButton(e.clientX, e.clientY)) {
       this.setOpen(false);
     }
   };
 
-  private isClickOnToolbarButton(target: Node): boolean {
-    // Check if click is on our toolbar button
-    let el = target as HTMLElement | null;
-    while (el) {
-      if (el instanceof HTMLButtonElement && el.getAttribute("aria-label") === "Community Hub") {
-        return true;
-      }
-      el = el.parentElement;
-    }
-    return false;
+  private isClickOnHubButton(clientX: number, clientY: number): boolean {
+    const rect = this.hubButtonPixi?.getScreenRect();
+    if (!rect) return false;
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
   }
 
   constructor() {
@@ -286,31 +283,22 @@ class CommunityHub {
 
     this.panel = this.createPanel();
 
-    // Inject button into game toolbar using utility
-    // Create SVG icon as data URL
-    const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
-    const iconDataUrl = `data:image/svg+xml;base64,${btoa(iconSvg)}`;
-
-    this.cleanupToolbarButton = startInjectGamePanelButton({
+    // Inject a Pixi-native button into the game's own right-side icon rail
+    // (the game moved this rail from DOM buttons to native Pixi rendering,
+    // so there is no DOM element left to anchor a cloned <button> next to).
+    this.hubButtonPixi = startCommunityHubButtonPixi({
       onClick: () => {
         const next = !this.panelOpen;
         this.setOpen(next);
       },
-      iconUrl: iconDataUrl,
-      ariaLabel: "Community Hub",
-      onMounted: (btn) => {
-        // Append the badge as a child of the toolbar button itself
-        btn.style.position = "relative";
-        btn.style.overflow = "visible";
-        btn.appendChild(this.badge);
-        this.updateAllBadges();
-      },
+      onGeometryChanged: () => this.updateBadgePosition(),
     });
 
-    this.slot.append(this.panel);
+    this.slot.append(this.badge, this.panel);
     document.body.appendChild(this.slot);
 
     window.addEventListener("pointerdown", this.handlePointerDown);
+    window.addEventListener("resize", this.handleWindowResize);
     window.addEventListener(CH_EVENTS.OPEN, this.handleOverlayOpen as EventListener);
     window.addEventListener(CH_EVENTS.CLOSE, this.handleOverlayClose as EventListener);
     window.addEventListener(CH_EVENTS.CONVERSATIONS_REFRESH, this.handleConversationsRefresh);
@@ -340,9 +328,7 @@ class CommunityHub {
   private createBadge(): HTMLSpanElement {
     const el = document.createElement("span");
     style(el, {
-      position: "absolute",
-      top: "-4px",
-      right: "-4px",
+      position: "fixed",
       minWidth: "18px",
       height: "18px",
       padding: "0 5px",
@@ -355,11 +341,25 @@ class CommunityHub {
       alignItems: "center",
       justifyContent: "center",
       pointerEvents: "none",
-      zIndex: "1",
+      zIndex: "10000",
       lineHeight: "1",
     });
     return el;
   }
+
+  private updateBadgePosition(): void {
+    const rect = this.hubButtonPixi?.getScreenRect();
+    if (!rect) return;
+    style(this.badge, {
+      top: `${rect.top - 4}px`,
+      right: `${window.innerWidth - rect.right - 4}px`,
+    });
+  }
+
+  private handleWindowResize = () => {
+    if (this.destroyed) return;
+    this.updateBadgePosition();
+  };
 
   private updateAllBadges(): void {
     const friendUnread = getTotalFriendUnreadCount();
@@ -386,6 +386,7 @@ class CommunityHub {
 
     // Update toolbar badge (total)
     this.setBadgeCount(this.badge, total);
+    this.updateBadgePosition();
   }
 
   private setBadgeCount(badge: HTMLSpanElement, count: number): void {
@@ -690,11 +691,12 @@ class CommunityHub {
     window.removeEventListener(CH_EVENTS.OPEN_GROUP_CHAT, this.handleOpenGroupChat as EventListener);
     window.removeEventListener("qws-friend-overlay-auth-update", this.handleAuthUpdate);
     window.removeEventListener("gemini:ch-close-after-decline", this.handleCloseAfterDecline);
+    window.removeEventListener("resize", this.handleWindowResize);
 
-    // Cleanup toolbar button injection
-    if (this.cleanupToolbarButton) {
-      this.cleanupToolbarButton();
-      this.cleanupToolbarButton = null;
+    // Cleanup Pixi toolbar button injection
+    if (this.hubButtonPixi) {
+      this.hubButtonPixi.stop();
+      this.hubButtonPixi = null;
     }
 
     // Cleanup notification sound
