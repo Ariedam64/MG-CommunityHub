@@ -18,6 +18,17 @@ const RAIL_LABEL = "RightSideRail";
 const RAIL_FIND_RETRY_MS = 1000;
 const RAIL_FIND_LOG_EVERY = 30;
 
+// Arie's Mod's own notification bell, when present, adds itself directly to
+// the rail under this label (see notificationBellPixi.ts in that project).
+// Anchoring below it — when it's there — keeps both mods' buttons grouped
+// together instead of scattered across the rail.
+const ARIES_MOD_BELL_LABEL = "GeminiNotificationBell";
+// The rail's icon slots aren't individually labeled, so there's no direct
+// way to say "the Chat slot" by name — but only the Chat slot carries this
+// unread-badge child, which makes it identifiable. Used as the fallback
+// anchor when Arie's Mod isn't running.
+const CHAT_SLOT_MARKER_LABEL = "RightSideRailChatBadge";
+
 const DEFAULT_ICON_GLYPH = "\u{1F465}"; // 👥
 const DEFAULT_SLOT_SIZE = 45;
 const DEFAULT_SLOT_SPACING = 52;
@@ -185,6 +196,24 @@ export function startCommunityHubButtonPixi(
     canvasListenersAttached = true;
   };
 
+  // Finds the rail child to stack our button below: Arie's Mod's own bell
+  // when it's running alongside us, otherwise the Chat icon. Both are found
+  // by searching each rail child's own subtree for a known marker label —
+  // not by tracking an "is Arie's Mod running" flag — so this stays correct
+  // even if Arie's Mod loads after us (or unloads) and the rail updates.
+  const findAnchorSlot = (): any | null => {
+    if (!Array.isArray(rail?.children)) return null;
+    for (const child of rail.children) {
+      if (child === buttonContainer) continue;
+      if (findByLabel(child, ARIES_MOD_BELL_LABEL)) return child;
+    }
+    for (const child of rail.children) {
+      if (child === buttonContainer) continue;
+      if (findByLabel(child, CHAT_SLOT_MARKER_LABEL)) return child;
+    }
+    return null;
+  };
+
   // Reads the real spacing/size of the rail's existing icons instead of
   // hardcoding them, so this keeps working if the game changes the rail's
   // slot size or icon count in a future build.
@@ -206,8 +235,6 @@ export function startCommunityHubButtonPixi(
       .sort((a: number, b: number) => a - b);
     if (siblingWidths.length) size = siblingWidths[Math.floor(siblingWidths.length / 2)];
 
-    if (!siblings.length) return { size, nextY: 0 };
-
     const ys = siblings.map((c: any) => Number(c?.y) || 0).sort((a, b) => a - b);
     let spacing = DEFAULT_SLOT_SPACING;
     if (ys.length >= 2) {
@@ -217,6 +244,16 @@ export function startCommunityHubButtonPixi(
       const median = diffs[Math.floor(diffs.length / 2)];
       if (Number.isFinite(median) && median > 0) spacing = median;
     }
+
+    const anchorSlot = findAnchorSlot();
+    if (anchorSlot) {
+      return { size, nextY: (Number(anchorSlot.y) || 0) + spacing };
+    }
+
+    // Neither Arie's Mod's bell nor Chat has loaded into the rail yet —
+    // stack after whatever exists so far; the next resync (rail's
+    // childAdded/childRemoved) re-anchors as soon as one of them appears.
+    if (!ys.length) return { size, nextY: 0 };
     return { size, nextY: ys[ys.length - 1] + spacing };
   };
 
