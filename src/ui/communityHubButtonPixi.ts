@@ -320,7 +320,16 @@ export function startCommunityHubButtonPixi(
     }
   };
 
-  const onRailChildrenChanged = () => sync();
+  // Deferred to the next frame rather than run synchronously: when Arie's
+  // Mod's bell is what just got added, `rail.addChild(bellContainer)` fires
+  // this listener *before* Arie's Mod's own syncGeometry() (which sets the
+  // bell's real position) runs — that call happens right after `addChild`
+  // returns, still in the same synchronous call stack, but after us. Reading
+  // the bell's position here would catch it at its default (0, 0). Waiting
+  // a frame guarantees that synchronous positioning has already completed.
+  const onRailChildrenChanged = () => {
+    raf(() => sync());
+  };
 
   const restartSearchIfNeeded = () => {
     if (!running || rail) return;
@@ -342,7 +351,10 @@ export function startCommunityHubButtonPixi(
     });
     debugState.attached = true;
     console.info(`[communityHubButtonPixi] attached to ${RAIL_LABEL} after ${findAttempts} attempt(s)`);
-    sync();
+    // Deferred a frame for the same reason as onRailChildrenChanged: if
+    // Arie's Mod's bell attaches to the rail in this same tick, its own
+    // position isn't set until right after our own attach handler returns.
+    raf(() => sync());
   };
 
   const tryFindRail = () => {
