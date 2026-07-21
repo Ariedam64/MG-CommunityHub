@@ -6,9 +6,10 @@ import { createLeaderboardTab } from "./tabs/leaderboardTab";
 import { createSearchTab } from "./tabs/searchTab";
 import { createMyProfileTab } from "./tabs/myProfileTab";
 import {
-  startCommunityHubButtonPixi,
-  type CommunityHubButtonPixiController,
-} from "@/ui/communityHubButtonPixi";
+  startCommunityHubButtonFloating,
+  WIDGET_Z_INDEX,
+  type CommunityHubButtonFloatingController,
+} from "@/ui/communityHubButtonFloating";
 import { style, CH_EVENTS, ensureSharedStyles } from "./shared";
 import { getTotalFriendUnreadCount, getTotalGroupUnreadCount, getIncomingRequestsCount, hasApiKey } from "@/api";
 import {
@@ -200,7 +201,7 @@ class CommunityHub {
   private navBadges = new Map<TabId, HTMLSpanElement>();
   private activeTab: TabId = "community";
   private panelOpen = false;
-  private hubButtonPixi: CommunityHubButtonPixiController | null = null;
+  private hubButtonFloating: CommunityHubButtonFloatingController | null = null;
   private kofiModal: HTMLElement | null = null;
   private kofiNavBtn: HTMLButtonElement | null = null;
   // Safety flags to prevent stale/destroyed instances from acting on events
@@ -245,19 +246,18 @@ class CommunityHub {
     if (this.destroyed) return;
     this.setOpen(false);
   };
+  // The floating button stops pointerdown propagation itself (it needs to,
+  // to distinguish a click from a drag), so a click on it never reaches
+  // this window-level listener in the first place — no need to special-case
+  // it here the way the old Pixi button (a canvas region, not a real DOM
+  // node) required.
   private handlePointerDown = (e: PointerEvent) => {
     if (this.destroyed || !this.panelOpen) return;
     const t = e.target as Node;
-    if (!this.slot.contains(t) && !this.isClickOnHubButton(e.clientX, e.clientY)) {
+    if (!this.slot.contains(t)) {
       this.setOpen(false);
     }
   };
-
-  private isClickOnHubButton(clientX: number, clientY: number): boolean {
-    const rect = this.hubButtonPixi?.getScreenRect();
-    if (!rect) return false;
-    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-  }
 
   constructor() {
     ensureCommunityHubStyle();
@@ -283,22 +283,21 @@ class CommunityHub {
 
     this.panel = this.createPanel();
 
-    // Inject a Pixi-native button into the game's own right-side icon rail
-    // (the game moved this rail from DOM buttons to native Pixi rendering,
-    // so there is no DOM element left to anchor a cloned <button> next to).
-    this.hubButtonPixi = startCommunityHubButtonPixi({
+    // Floating, draggable DOM button instead of anchoring inside the game's
+    // Pixi icon rail — the rail approach kept breaking (rail not found,
+    // race conditions with sibling icons repositioning asynchronously).
+    this.hubButtonFloating = startCommunityHubButtonFloating({
       onClick: () => {
         const next = !this.panelOpen;
         this.setOpen(next);
       },
-      onGeometryChanged: () => this.updateBadgePosition(),
+      onMoved: () => this.updateBadgePosition(),
     });
 
     this.slot.append(this.badge, this.panel);
     document.body.appendChild(this.slot);
 
     window.addEventListener("pointerdown", this.handlePointerDown);
-    window.addEventListener("resize", this.handleWindowResize);
     window.addEventListener(CH_EVENTS.OPEN, this.handleOverlayOpen as EventListener);
     window.addEventListener(CH_EVENTS.CLOSE, this.handleOverlayClose as EventListener);
     window.addEventListener(CH_EVENTS.CONVERSATIONS_REFRESH, this.handleConversationsRefresh);
@@ -320,7 +319,13 @@ class CommunityHub {
       top: "0",
       right: "0",
       pointerEvents: "none",
-      zIndex: "9999",
+      // A position:fixed element with its own z-index becomes a stacking
+      // context: descendants' z-index values (badge, panel) only order them
+      // against each other, capped at whatever this is set to. Must clear
+      // the floating button's own z-index (a sibling, appended directly to
+      // document.body) or the badge/panel would stay stuck behind it no
+      // matter how high their own z-index is set.
+      zIndex: String(WIDGET_Z_INDEX + 1),
     });
     return el;
   }
@@ -348,18 +353,13 @@ class CommunityHub {
   }
 
   private updateBadgePosition(): void {
-    const rect = this.hubButtonPixi?.getScreenRect();
+    const rect = this.hubButtonFloating?.getScreenRect();
     if (!rect) return;
     style(this.badge, {
       top: `${rect.top - 4}px`,
       right: `${window.innerWidth - rect.right - 4}px`,
     });
   }
-
-  private handleWindowResize = () => {
-    if (this.destroyed) return;
-    this.updateBadgePosition();
-  };
 
   private updateAllBadges(): void {
     const friendUnread = getTotalFriendUnreadCount();
@@ -691,12 +691,11 @@ class CommunityHub {
     window.removeEventListener(CH_EVENTS.OPEN_GROUP_CHAT, this.handleOpenGroupChat as EventListener);
     window.removeEventListener("qws-friend-overlay-auth-update", this.handleAuthUpdate);
     window.removeEventListener("gemini:ch-close-after-decline", this.handleCloseAfterDecline);
-    window.removeEventListener("resize", this.handleWindowResize);
 
-    // Cleanup Pixi toolbar button injection
-    if (this.hubButtonPixi) {
-      this.hubButtonPixi.stop();
-      this.hubButtonPixi = null;
+    // Cleanup floating toolbar button
+    if (this.hubButtonFloating) {
+      this.hubButtonFloating.stop();
+      this.hubButtonFloating = null;
     }
 
     // Cleanup notification sound
