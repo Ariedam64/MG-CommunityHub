@@ -170,9 +170,11 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
   const whiteRow = clockRow("white", options.white);
   const blackRow = clockRow("black", options.black);
 
-  // My side at the bottom, the way a physical board faces me.
-  const topRow = options.myColor === "white" ? blackRow : whiteRow;
-  const bottomRow = options.myColor === "white" ? whiteRow : blackRow;
+  // My side at the bottom, matching the board itself — which turns round for
+  // Black. A spectator's board is not turned, so neither is this.
+  const blackAtBottom = options.myColor === "black";
+  const topRow = blackAtBottom ? whiteRow : blackRow;
+  const bottomRow = blackAtBottom ? blackRow : whiteRow;
 
   const clocks = document.createElement("div");
   clocks.append(topRow.row, bottomRow.row);

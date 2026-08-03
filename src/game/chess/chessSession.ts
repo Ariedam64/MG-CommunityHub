@@ -22,13 +22,14 @@ import {
   sendChessChallenge,
 } from "@/api/endpoints/chess";
 import { getCurrentPlayerId } from "@/api/init";
-import { invalidateFriendChessMatches } from "@/api/cache/chess";
+import { addCachedChessChallenge, invalidateFriendChessMatches } from "@/api/cache/chess";
 import { isDiscordActivityContext } from "@/platform/discordCsp";
 import { toastSimple } from "@/ui/toast";
 import { createChessHud, type ChessHudController } from "@/ui/hub/chessHud";
 import { CH_EVENTS } from "@/ui/hub/shared";
 import { tos } from "@/game/tileObjectSystem";
 import type {
+  ChessChallenge,
   ChessColor,
   ChessColorChoice,
   ChessMatch,
@@ -318,8 +319,16 @@ export async function challengePlayer(
   const outcome = (await sendChessChallenge(opponentId, color)) as {
     ok: boolean;
     status?: number;
+    challenge?: ChessChallenge;
   };
-  if (outcome.ok) return true;
+
+  if (outcome.ok) {
+    // chess_challenge only goes to the opponent, so the sender never hears
+    // about its own challenge. Cache it here or the button never flips to
+    // "sent" until the next welcome.
+    if (outcome.challenge) addCachedChessChallenge(outcome.challenge, "outgoing");
+    return true;
+  }
 
   const message: string =
     (

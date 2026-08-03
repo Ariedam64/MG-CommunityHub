@@ -116,6 +116,12 @@ export type ChessBoardOptions = {
   placePieces?: boolean;
   /** Tint the black side. Defaults to true. */
   tintPieces?: boolean;
+  /**
+   * Turn the board round so Black is at the bottom. Defaults to whichever side
+   * this client plays, so both players look at their own pieces from their own
+   * end. Spectators get White's view.
+   */
+  flipped?: boolean;
   /** Allow moving the pieces by click or drag. Defaults to true. */
   enableInput?: boolean;
   /**
@@ -558,6 +564,7 @@ export async function paintChessBoard(
     blackTint: options.blackTint ?? DEFAULT_BLACK_TINT,
     tintPieces: options.tintPieces !== false,
     decorIds,
+    flipped: options.flipped ?? options.net?.myColor === "black",
   };
 
   const unknownIds = [...new Set(Object.values(decorIds))].filter(

@@ -22,14 +22,8 @@ import {
   onChessSessionChange,
   watchChessMatch,
 } from "@/game/chess/chessSession";
-import type { ChessColorChoice, PlayerView } from "@/api/types";
+import type { PlayerView } from "@/api/types";
 import { style } from "../shared";
-
-const COLOR_CHOICES: { value: ChessColorChoice; glyph: string; label: string }[] = [
-  { value: "random", glyph: "◐", label: "Random colour" },
-  { value: "white", glyph: "○", label: "Play White" },
-  { value: "black", glyph: "●", label: "Play Black" },
-];
 
 function actionButton(label: string, onClick: () => void | Promise<void>): HTMLButtonElement {
   const button = document.createElement("button");
@@ -112,7 +106,6 @@ export function createGamesSection(player: PlayerView): {
 
   section.append(title, body);
 
-  let chosenColor: ChessColorChoice = "random";
   let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
   function stopCountdown(): void {
@@ -152,31 +145,34 @@ export function createGamesSection(player: PlayerView): {
       return;
     }
 
-    // 2. I challenged them — count the offer down.
+    // 2. I challenged them — the button becomes the pending offer, counting
+    // itself down. It goes back to "Challenge" on expiry or on a decline; the
+    // decline arrives as an event, the expiry is noticed here because the
+    // server's sweep can be up to ten seconds behind the clock.
     if (pending?.direction === "outgoing") {
-      const status = hint("Challenge sent");
+      const waiting = actionButton("Cancel", async () => {
+        removeCachedChessChallenge(pending.challenge.id);
+        await cancelChessChallenge(pending.challenge.id);
+      });
+      body.appendChild(waiting);
+
+      const status = hint("Waiting for an answer…");
       body.appendChild(status);
 
       const expiresAt = Date.parse(pending.challenge.expiresAt);
       const tick = () => {
         const remaining = Number.isFinite(expiresAt) ? expiresAt - Date.now() : 0;
         if (remaining <= 0) {
-          status.textContent = "Challenge expired";
           stopCountdown();
+          // Drops it from the cache, which repaints us back to "Challenge".
+          removeCachedChessChallenge(pending.challenge.id);
           return;
         }
         const seconds = Math.ceil(remaining / 1000);
-        status.textContent = `Challenge sent — ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+        waiting.textContent = `Challenge sent — ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}  ✕`;
       };
       tick();
       countdownTimer = setInterval(tick, 500);
-
-      body.appendChild(
-        actionButton("Cancel", async () => {
-          removeCachedChessChallenge(pending.challenge.id);
-          await cancelChessChallenge(pending.challenge.id);
-        }),
-      );
       return;
     }
 
@@ -198,36 +194,10 @@ export function createGamesSection(player: PlayerView): {
       return;
     }
 
-    // 4. Free — offer the challenge, with a colour preference.
-    const colorRow = document.createElement("div");
-    style(colorRow, { display: "flex", gap: "6px" });
-
-    for (const choice of COLOR_CHOICES) {
-      const chip = document.createElement("button");
-      chip.textContent = choice.glyph;
-      chip.title = choice.label;
-      const selected = chosenColor === choice.value;
-      style(chip, {
-        width: "32px",
-        height: "32px",
-        borderRadius: "8px",
-        fontSize: "15px",
-        cursor: "pointer",
-        color: selected ? "#5eead4" : "#e7eef7",
-        border: `1px solid ${selected ? "rgba(94,234,212,0.4)" : "rgba(255,255,255,0.08)"}`,
-        background: selected ? "rgba(94,234,212,0.1)" : "rgba(255,255,255,0.03)",
-      });
-      chip.onclick = () => {
-        chosenColor = choice.value;
-        render();
-      };
-      colorRow.appendChild(chip);
-    }
-
-    body.appendChild(colorRow);
-
+    // 4. Free — offer the challenge. Colours are always drawn at random, so
+    // there is nothing to pick.
     const challenge = actionButton("Challenge", async () => {
-      await challengePlayer(player.playerId, chosenColor);
+      await challengePlayer(player.playerId, "random");
     });
 
     if (isChessBoardBusy()) {
