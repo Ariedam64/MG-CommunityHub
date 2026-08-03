@@ -87,8 +87,12 @@ const DEFAULT_ALPHA = 1;
  */
 const DEFAULT_BLACK_TINT = 0x6a6a76;
 
-/** Decor sprite standing in for each piece. */
-const DEFAULT_PIECE_DECOR_IDS: Record<ChessPieceKind, string> = {
+/**
+ * Decor sprite standing in for each piece. Exported so the HUD can show the
+ * same sprites for captured pieces as the board does for live ones — a taken
+ * knight has to look like the knight it was.
+ */
+export const DEFAULT_PIECE_DECOR_IDS: Record<ChessPieceKind, string> = {
   pawn: "StoneGnome",
   rook: "StonePedestal",
   knight: "StoneCaribou",
@@ -172,7 +176,25 @@ export type ChessNetBinding = {
    * and puts the piece back.
    */
   requestPromotion?: (side: ChessSide) => Promise<ChessPieceKind | null>;
+
+  /** Fired whenever the position changes, by a move or by a resync. */
+  onPositionChanged?: () => void;
 };
+
+/** Pieces each side has taken, in the order they were taken. */
+export type CapturedPieces = Record<ChessSide, ChessPieceKind[]>;
+
+/**
+ * Tracked from the moves themselves rather than derived from the position.
+ * Subtracting the board from the starting material looks simpler, but a
+ * promotion breaks it: the promoted pawn reads as captured and its new queen as
+ * an extra one, so both the list and the score come out wrong.
+ */
+let captured: CapturedPieces = { white: [], black: [] };
+
+export function getCapturedPieces(): CapturedPieces {
+  return { white: [...captured.white], black: [...captured.black] };
+}
 
 /** Half-moves played. 0 is the starting position, 1 is after White's first. */
 let ply = 0;
@@ -272,6 +294,8 @@ function commitMove(move: ChessMove): void {
     move.promotion ? ` (=${move.promotion})` : ""
   }`;
 
+  if (move.captured) captured[movedSide].push(move.captured.kind);
+
   game = applyMove(game, move);
   ply += 1;
   claimedPly = Math.max(claimedPly, ply);
@@ -286,6 +310,7 @@ function commitMove(move: ChessMove): void {
   const status = getStatus(game);
   playChessSound(soundForMove(move, status));
   logOutcome(movedSide, description, status);
+  binding.onPositionChanged?.();
 }
 
 /**
@@ -427,18 +452,22 @@ export function resetPositionFromMoves(
   settlePendingSlide();
 
   let next = createGame();
+  const rebuilt: CapturedPieces = { white: [], black: [] };
+
   for (const entry of moves) {
     const { move } = attemptMove(next, entry.from, entry.to, entry.promotion ?? "queen");
     if (!move) {
       console.log("[ChessBoard] resync failed: illegal move in server list", entry);
       return false;
     }
+    if (move.captured) rebuilt[move.piece.side].push(move.captured.kind);
     next = applyMove(next, move);
   }
 
   game = next;
   ply = moves.length;
   claimedPly = ply;
+  captured = rebuilt;
 
   renderPosition(game);
   refreshTints(game);
@@ -448,6 +477,7 @@ export function resetPositionFromMoves(
   const last = moves[moves.length - 1];
   if (last) showLastMove(last.from, last.to);
 
+  binding.onPositionChanged?.();
   return true;
 }
 
@@ -523,6 +553,7 @@ export function clearChessBoard(): boolean {
   game = null;
   ply = 0;
   claimedPly = 0;
+  captured = { white: [], black: [] };
   frozen = false;
   awaitingPromotion = false;
   binding = { myColor: null };
@@ -595,6 +626,7 @@ export async function paintChessBoard(
     game = createGame();
     ply = 0;
     claimedPly = 0;
+    captured = { white: [], black: [] };
 
     if (options.startFromMoves?.length) {
       for (const entry of options.startFromMoves) {
@@ -603,6 +635,7 @@ export async function paintChessBoard(
           console.log("[ChessBoard] illegal move in the replayed list", entry);
           break;
         }
+        if (move.captured) captured[move.piece.side].push(move.captured.kind);
         game = applyMove(game, move);
         ply += 1;
       }

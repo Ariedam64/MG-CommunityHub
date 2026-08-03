@@ -100,7 +100,7 @@ export function showIncomingChallenge(challenge: ChessChallenge): void {
   }[challenge.requestedColor];
 
   const subtitle = document.createElement("div");
-  subtitle.textContent = `Chess — 10 min each, ${colorLabel}`;
+  subtitle.textContent = `Chess, 10 minutes each. ${colorLabel}`;
   Object.assign(subtitle.style, { fontSize: "12px", color: "#8fa2b5" } as CSSStyleDeclaration);
 
   const countdown = document.createElement("div");

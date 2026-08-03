@@ -127,7 +127,7 @@ export function createGamesSection(player: PlayerView): {
 
     // 1. They challenged me.
     if (pending?.direction === "incoming") {
-      body.appendChild(hint("They have challenged you."));
+      body.appendChild(hint("They challenged you."));
 
       const row = document.createElement("div");
       style(row, { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" });
@@ -156,9 +156,6 @@ export function createGamesSection(player: PlayerView): {
       });
       body.appendChild(waiting);
 
-      const status = hint("Waiting for an answer…");
-      body.appendChild(status);
-
       const expiresAt = Date.parse(pending.challenge.expiresAt);
       const tick = () => {
         const remaining = Number.isFinite(expiresAt) ? expiresAt - Date.now() : 0;
@@ -169,7 +166,7 @@ export function createGamesSection(player: PlayerView): {
           return;
         }
         const seconds = Math.ceil(remaining / 1000);
-        waiting.textContent = `Challenge sent — ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}  ✕`;
+        waiting.textContent = `Waiting for an answer  ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}  ✕`;
       };
       tick();
       countdownTimer = setInterval(tick, 500);
@@ -179,7 +176,7 @@ export function createGamesSection(player: PlayerView): {
     // 3. They are already playing — offer to watch.
     if (theirMatch) {
       const them = theirMatch.white.playerId === player.playerId ? theirMatch.black : theirMatch.white;
-      body.appendChild(hint(`In a game against ${them.name ?? "someone"}`));
+      body.appendChild(hint(`Playing against ${them.name ?? "someone"} right now`));
 
       const watch = actionButton("Watch", async () => {
         await watchChessMatch(theirMatch.id);
@@ -187,7 +184,7 @@ export function createGamesSection(player: PlayerView): {
       if (isChessBoardBusy()) {
         watch.disabled = true;
         style(watch, { opacity: "0.5", cursor: "not-allowed" });
-        body.append(watch, hint("Leave your own board first."));
+        body.append(watch, hint("Finish your own game first."));
       } else {
         body.appendChild(watch);
       }

@@ -10,7 +10,9 @@
 
 import { readHubPath, writeHubPath } from "@/storage/storage";
 import { WIDGET_Z_INDEX } from "@/ui/communityHubButtonFloating";
+import { attachSpriteIcon } from "@/ui/spriteIcons";
 import { CLOCK_URGENT_MS, formatClock, onChessClockTick } from "@/game/chess/chessClock";
+import { DEFAULT_PIECE_DECOR_IDS } from "@/game/chess/chessBoard";
 import type { ChessColor } from "@/api/types";
 import type { ChessPieceKind } from "@/game/chess/chessRules";
 
@@ -24,6 +26,26 @@ const DRAG_THRESHOLD_PX = 4;
 
 /** Above the floating hub button, so it is never buried by it. */
 const HUD_Z_INDEX = WIDGET_Z_INDEX + 10;
+
+/** Size of a captured-piece sprite in the strip under each clock. */
+const CAPTURE_ICON_PX = 16;
+
+/**
+ * Standard relative values. The king is never captured, so it has none — and
+ * listing it at 0 keeps the record exhaustive rather than relying on it never
+ * appearing.
+ */
+const PIECE_VALUES: Record<ChessPieceKind, number> = {
+  pawn: 1,
+  knight: 3,
+  bishop: 3,
+  rook: 5,
+  queen: 9,
+  king: 0,
+};
+
+/** Heaviest first, so a strip reads like a chess site's rather than a log. */
+const CAPTURE_ORDER: ChessPieceKind[] = ["queen", "rook", "bishop", "knight", "pawn", "king"];
 
 const PROMOTION_CHOICES: { kind: ChessPieceKind; glyph: string; label: string }[] = [
   { kind: "queen", glyph: "♛", label: "Queen" },
@@ -49,6 +71,11 @@ export type ChessHudOptions = {
 };
 
 export type ChessHudController = {
+  /**
+   * The pieces each side has taken. Keyed by the capturing side, so
+   * `white` holds the black pieces White has won.
+   */
+  setCaptures(captures: Record<ChessColor, ChessPieceKind[]>): void;
   /** Shows or hides the "X offers a draw" banner. */
   setDrawOffer(from: "me" | "them" | null): void;
   /** Shows the end-of-game banner and disables the game controls. */
@@ -128,13 +155,19 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
   // ── Clock rows ─────────────────────────────────────────────────────────────
 
   function clockRow(side: ChessColor, name: string) {
+    // A block, not a row: the captured strip sits under the name, and the whole
+    // thing highlights together when it is that side's turn.
+    const block = document.createElement("div");
+    Object.assign(block.style, {
+      padding: "5px 6px",
+      borderRadius: "6px",
+    } as CSSStyleDeclaration);
+
     const row = document.createElement("div");
     Object.assign(row.style, {
       display: "flex",
       alignItems: "center",
       gap: "8px",
-      padding: "5px 6px",
-      borderRadius: "6px",
     } as CSSStyleDeclaration);
 
     const dot = document.createElement("span");
@@ -164,7 +197,20 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
     } as CSSStyleDeclaration);
 
     row.append(dot, label, time);
-    return { row, time };
+
+    // The pieces this side has taken, plus its material edge if it leads.
+    const strip = document.createElement("div");
+    Object.assign(strip.style, {
+      display: "none",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: "1px",
+      minHeight: `${CAPTURE_ICON_PX}px`,
+      margin: "3px 0 0 18px",
+    } as CSSStyleDeclaration);
+
+    block.append(row, strip);
+    return { block, row, time, strip };
   }
 
   const whiteRow = clockRow("white", options.white);
@@ -177,7 +223,7 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
   const bottomRow = blackAtBottom ? blackRow : whiteRow;
 
   const clocks = document.createElement("div");
-  clocks.append(topRow.row, bottomRow.row);
+  clocks.append(topRow.block, bottomRow.block);
 
   // ── Banners ────────────────────────────────────────────────────────────────
 
@@ -314,7 +360,7 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
     ]) {
       const active = reading.turn === side;
       const ms = side === "white" ? reading.whiteMs : reading.blackMs;
-      row.row.style.background = active ? "#1b2735" : "transparent";
+      row.block.style.background = active ? "#1b2735" : "transparent";
       row.time.style.color = active && ms < CLOCK_URGENT_MS ? "#ff6b6b" : "#d8e2ec";
     }
   });
@@ -416,7 +462,70 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
 
   let destroyed = false;
 
+  /**
+   * Draws one side's captured pieces. The sprites are the board's own decor
+   * sprites, fetched through the shared sprite cache — a taken knight has to
+   * look like the knight it was standing on the board.
+   */
+  function paintCaptures(
+    strip: HTMLElement,
+    taken: ChessPieceKind[],
+    advantage: number,
+  ): void {
+    strip.replaceChildren();
+
+    if (!taken.length && advantage <= 0) {
+      strip.style.display = "none";
+      return;
+    }
+    strip.style.display = "flex";
+
+    const counts = new Map<ChessPieceKind, number>();
+    for (const kind of taken) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+
+    for (const kind of CAPTURE_ORDER) {
+      const count = counts.get(kind) ?? 0;
+      for (let i = 0; i < count; i++) {
+        const slot = document.createElement("span");
+        Object.assign(slot.style, {
+          width: `${CAPTURE_ICON_PX}px`,
+          height: `${CAPTURE_ICON_PX}px`,
+          display: "inline-block",
+          // Pawns overlap slightly, the way a captured pile stacks.
+          marginRight: i > 0 ? "-4px" : "0",
+        } as CSSStyleDeclaration);
+        strip.appendChild(slot);
+        attachSpriteIcon(slot, ["decor"], DEFAULT_PIECE_DECOR_IDS[kind], CAPTURE_ICON_PX, "chessHud");
+      }
+    }
+
+    // Only the leader shows a number: two of them would just be the same fact
+    // written twice, with a minus sign.
+    if (advantage > 0) {
+      const score = document.createElement("span");
+      score.textContent = `+${advantage}`;
+      Object.assign(score.style, {
+        fontSize: "11px",
+        color: "#8fa2b5",
+        marginLeft: "6px",
+        fontVariantNumeric: "tabular-nums",
+      } as CSSStyleDeclaration);
+      strip.appendChild(score);
+    }
+  }
+
   return {
+    setCaptures(captures) {
+      const material = (list: ChessPieceKind[]) =>
+        list.reduce((sum, kind) => sum + PIECE_VALUES[kind], 0);
+
+      const whiteMaterial = material(captures.white ?? []);
+      const blackMaterial = material(captures.black ?? []);
+
+      paintCaptures(whiteRow.strip, captures.white ?? [], whiteMaterial - blackMaterial);
+      paintCaptures(blackRow.strip, captures.black ?? [], blackMaterial - whiteMaterial);
+    },
+
     setDrawOffer(from) {
       banner.replaceChildren();
 
@@ -426,7 +535,7 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
       }
 
       if (from === "me") {
-        banner.textContent = "Draw offered — waiting for a reply";
+        banner.textContent = "You offered a draw. Waiting for a reply.";
         banner.style.display = "block";
         return;
       }

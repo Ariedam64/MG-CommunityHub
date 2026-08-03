@@ -42,6 +42,7 @@ import {
   applyRemoteMove,
   bindChessNet,
   clearChessBoard,
+  getCapturedPieces,
   getChessClaimedPly,
   getChessPly,
   paintChessBoard,
@@ -148,18 +149,34 @@ function toBoardMoves(moves: ChessMoveRecord[] | undefined) {
   return parsed;
 }
 
-function resultText(match: ChessMatch, myColor: ChessColor | null): string {
-  const reason = {
-    checkmate: "Checkmate",
-    stalemate: "Stalemate",
-    resign: "Resignation",
-    timeout: "On time",
-    agreement: "By agreement",
-  }[match.reason ?? "checkmate"];
+/** Pushes the current capture tally into the HUD. */
+function paintCaptures(): void {
+  session?.hud?.setCaptures(getCapturedPieces());
+}
 
-  if (match.result === "draw") return `Draw — ${reason?.toLowerCase() ?? "agreed"}`;
-  if (!myColor) return `${match.result === "white" ? "White" : "Black"} wins — ${reason}`;
-  return match.result === myColor ? `You win — ${reason}` : `You lose — ${reason}`;
+function resultText(match: ChessMatch, myColor: ChessColor | null): string {
+  if (match.result === "draw") {
+    if (match.reason === "stalemate") return "Draw by stalemate";
+    return "Draw agreed";
+  }
+
+  const winner = match.result === "white" ? "White" : "Black";
+  const won = myColor != null && match.result === myColor;
+
+  switch (match.reason) {
+    case "checkmate":
+      if (!myColor) return `Checkmate, ${winner.toLowerCase()} wins`;
+      return won ? "Checkmate, you win" : "Checkmate, you lose";
+    case "resign":
+      if (!myColor) return `${winner} wins by resignation`;
+      return won ? "Your opponent resigned" : "You resigned";
+    case "timeout":
+      if (!myColor) return `${winner} wins on time`;
+      return won ? "You win on time" : "You ran out of time";
+    default:
+      if (!myColor) return `${winner} wins`;
+      return won ? "You win" : "You lose";
+  }
 }
 
 // ── Mounting ─────────────────────────────────────────────────────────────────
@@ -186,7 +203,7 @@ function beginSession(match: ChessMatch, role: "player" | "spectator"): void {
   if (session) return;
 
   if (!claimBoardOwnership()) {
-    void toastSimple("Chess", "Another mod is already using the garden board.", "warn");
+    void toastSimple("Chess", "Another mod is already using your garden.", "warn");
     return;
   }
 
@@ -232,14 +249,14 @@ async function armBoard(): Promise<void> {
   if (!session || session.state !== "arming") return;
 
   if (!tos.isReady()) {
-    session.hud?.setStatusText("Waiting for the garden…");
+    session.hud?.setStatusText("Waiting for your garden to load...");
     session.armTimer = setTimeout(() => void armBoard(), ARM_RETRY_MS);
     return;
   }
 
   const boardMoves = toBoardMoves(session.match.moves);
   if (boardMoves == null) {
-    session.hud?.setStatusText("Could not read the move list.");
+    session.hud?.setStatusText("Something is wrong with this game's moves.");
     return;
   }
 
@@ -255,21 +272,23 @@ async function armBoard(): Promise<void> {
             },
             requestPromotion: async () =>
               (await session?.hud?.askPromotion()) ?? null,
+            onPositionChanged: paintCaptures,
           }
-        : { myColor: session.myColor },
+        : { myColor: session.myColor, onPositionChanged: paintCaptures },
   });
 
   // Torn down while we were awaiting.
   if (!session || session.state !== "arming") return;
 
   if (!result) {
-    session.hud?.setStatusText("Could not draw the board — retrying…");
+    session.hud?.setStatusText("Setting the board up...");
     session.armTimer = setTimeout(() => void armBoard(), ARM_RETRY_MS);
     return;
   }
 
   session.state = session.role === "player" ? "playing" : "spectating";
   session.hud?.setStatusText(null);
+  paintCaptures();
 
   // The panel covers the garden, and the garden is now the board. The floating
   // hub button stays, so reopening it during a game is one click away.
@@ -334,7 +353,7 @@ export async function challengePlayer(
     (
       {
         403: "You can only challenge friends.",
-        409: "There is already a challenge pending, or one of you is in a game.",
+        409: "One of you is already playing, or a challenge is still pending.",
         404: "That player was not found.",
       } as Record<number, string>
     )[outcome.status] ?? "Could not send the challenge.";
@@ -352,7 +371,7 @@ export async function acceptChallengeAndPlay(challengeId: number): Promise<boole
     return true;
   }
 
-  void toastSimple("Chess", "That challenge is no longer available.", "warn");
+  void toastSimple("Chess", "That challenge is gone.", "warn");
   return false;
 }
 
@@ -388,7 +407,7 @@ async function doDraw(action: "offer" | "accept" | "decline"): Promise<void> {
   const outcome = await postChessDraw(session.match.id, action, session.match.ply);
   if (!outcome.ok) {
     // The position moved on since the offer — the server refuses, we recalibrate.
-    void toastSimple("Chess", "That draw offer is no longer valid.", "warn");
+    void toastSimple("Chess", "That draw offer no longer stands.", "warn");
     await resyncFromServer();
     return;
   }
@@ -434,12 +453,12 @@ async function sendMove(
       break;
 
     case "illegal":
-      void toastSimple("Chess", "The server refused that move.", "warn");
+      void toastSimple("Chess", "That move was refused. Putting the board back in sync.", "warn");
       await resyncFromServer();
       break;
 
     case "error":
-      void toastSimple("Chess", "Your move did not reach the server.", "error");
+      void toastSimple("Chess", "Your move did not get through. Putting the board back in sync.", "error");
       await resyncFromServer();
       break;
   }
