@@ -587,6 +587,135 @@ export interface WelcomePayload {
       meta?: { totalPets?: number };
     };
   };
+  chess?: WelcomeChess;
+}
+
+// ========== Chess Types ==========
+
+export type ChessColor = "white" | "black";
+export type ChessColorChoice = ChessColor | "random";
+export type ChessPromotion = "queen" | "rook" | "bishop" | "knight";
+
+export type ChessChallengeStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "cancelled"
+  | "expired";
+
+export type ChessMatchStatus = "active" | "finished";
+export type ChessResult = "white" | "black" | "draw";
+export type ChessEndReason =
+  | "checkmate"
+  | "stalemate"
+  | "resign"
+  | "timeout"
+  | "agreement";
+
+/** Position status as the engine reports it, echoed on every chess_move. */
+export type ChessPositionStatus = "playing" | "check" | "checkmate" | "stalemate";
+
+export interface ChessPlayerRef {
+  playerId: string;
+  name: string | null;
+  avatarUrl?: string | null;
+  badges?: string[] | null;
+}
+
+/**
+ * Both clocks plus the server's own time. `serverTime` is what lets the client
+ * count down smoothly without polling: offset = serverTime - Date.now() at
+ * reception, and a wrongly-set local clock stops mattering.
+ */
+export interface ChessClock {
+  initialMs: number;
+  whiteMs: number;
+  blackMs: number;
+  turn: ChessColor;
+  turnStartedAt: string;
+  serverTime: string;
+}
+
+export interface ChessMoveRecord {
+  ply: number;
+  from: string;
+  to: string;
+  promotion?: ChessPromotion | null;
+}
+
+export interface ChessChallenge {
+  id: number;
+  from: ChessPlayerRef;
+  to: ChessPlayerRef;
+  requestedColor: ChessColorChoice;
+  status: ChessChallengeStatus;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface ChessMatch {
+  id: number;
+  white: ChessPlayerRef;
+  black: ChessPlayerRef;
+  status: ChessMatchStatus;
+  result: ChessResult | null;
+  reason: ChessEndReason | null;
+  turn: ChessColor;
+  ply: number;
+  drawOfferedBy: string | null;
+  drawOfferedPly: number | null;
+  clock: ChessClock;
+  /** Omitted on the list endpoint, present on GET /chess/matches/:id. */
+  moves?: ChessMoveRecord[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChessChallengeList {
+  incoming: ChessChallenge[];
+  outgoing: ChessChallenge[];
+}
+
+export interface WelcomeChess {
+  challenges: ChessChallengeList;
+  /** The player's own active games, moves included, for resync on reconnect. */
+  matches: ChessMatch[];
+}
+
+// ── Real-time event payloads ─────────────────────────────────────────────────
+
+export interface ChessChallengeEvent {
+  challenge: ChessChallenge;
+}
+
+export interface ChessChallengeClosedEvent {
+  challengeId: number;
+  by?: string;
+  reason?: "cancelled" | "expired";
+}
+
+export interface ChessMoveEvent {
+  matchId: number;
+  ply: number;
+  from: string;
+  to: string;
+  promotion?: ChessPromotion | null;
+  turn: ChessColor;
+  status: ChessPositionStatus;
+  clock: ChessClock;
+}
+
+export interface ChessMatchEndedEvent {
+  matchId: number;
+  result: ChessResult;
+  reason: ChessEndReason;
+  clock?: ChessClock;
+}
+
+export interface ChessDrawEvent {
+  matchId: number;
+  by: string;
+  ply?: number;
 }
 
 // ========== AI Chat Types ==========

@@ -8,6 +8,7 @@ import {
   viewJournal,
 } from "./playerViewActions";
 import { createAvatarElement } from "./playerAvatar";
+import { createGamesSection } from "./playerGamesSection";
 import { style, ensureSharedStyles, CH_EVENTS, createPlayerBadges } from "../shared";
 import { formatPrice } from "@/platform/format";
 import { detectEnvironment } from "@/platform/api";
@@ -182,10 +183,14 @@ export async function createPlayerDetailView(options: PlayerDetailViewOptions): 
   // Action buttons section
   let currentActionsSection = createActionsSection(player);
 
+  // Games section (chess challenge / watch). Owns subscriptions, so it hands
+  // back a teardown that has to run when the card closes.
+  const games = createGamesSection(player);
+
   // Stats and buttons section
   let statsSection = createStatsSection(player);
 
-  container.append(header, playerInfo, currentActionsSection, statsSection);
+  container.append(header, playerInfo, currentActionsSection, games.element, statsSection);
 
   // Re-fetch and re-render sections when privacy or room changes for this player.
   // Debounced because backend sends privacy_updated + room_changed back-to-back.
@@ -222,6 +227,7 @@ export async function createPlayerDetailView(options: PlayerDetailViewOptions): 
       window.removeEventListener(CH_EVENTS.PRIVACY_UPDATED, handlePlayerEvent);
       window.removeEventListener(CH_EVENTS.ROOM_CHANGED, handlePlayerEvent);
       if (refetchTimer) clearTimeout(refetchTimer);
+      games.destroy();
       return;
     }
 

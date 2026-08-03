@@ -295,6 +295,42 @@ function pointerToTile(ev: PointerEvent, opts: PointerToTileOpts = {}): PointerT
   };
 }
 
+/** Farm tiles are 256 world units square, independent of the map's tile size. */
+const FARM_TILE_SIZE = 256;
+
+/**
+ * Like pointerToTile, but accounts for the garden camera's pan by projecting
+ * through the tile system's worldContainer instead of assuming canvas pixels ==
+ * world pixels. pointerToTile only works when the camera sits at world origin;
+ * this is the version that works everywhere.
+ */
+function pointerToFarmTile(ev: PointerEvent): { tx: number; ty: number; gidx: number } | null {
+  assertReady();
+  const canvas = getCanvas();
+  const renderer = (state.engine as any)?.app?.renderer;
+  const worldContainer = (state.tos as any)?.worldContainer;
+  const map = (state.tos as any)?.map;
+  if (!canvas || !renderer?.screen || !worldContainer?.toLocal || !map) return null;
+
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  const global = {
+    x: (ev.clientX - rect.left) * renderer.screen.width / rect.width,
+    y: (ev.clientY - rect.top) * renderer.screen.height / rect.height,
+  };
+  const world = worldContainer.toLocal(global);
+  const tx = Math.floor(world.x / FARM_TILE_SIZE);
+  const ty = Math.floor(world.y / FARM_TILE_SIZE);
+
+  const cols = Number(map.cols);
+  const rows = Number(map.rows);
+  if (!Number.isFinite(cols) || tx < 0 || ty < 0 || tx >= cols) return null;
+  if (Number.isFinite(rows) && ty >= rows) return null;
+
+  return { tx, ty, gidx: tx + ty * cols };
+}
+
 function onPointerTile(listener: PointerTileListener, opts: PointerToTileOpts = {}): () => void {
   assertReady();
   const canvas = getCanvas();
@@ -512,8 +548,17 @@ export const tos = {
     return applyTileObject(Number(tx), Number(ty), next, opts);
   },
 
+  /** Le canvas du jeu, ou null si le moteur n'est pas encore capturé */
+  getCanvas,
+
   /** Convertit un événement pointeur en coordonnées de tile (tx, ty) */
   pointerToTile,
+
+  /**
+   * Comme pointerToTile, mais correct quand la caméra du jardin est déplacée.
+   * C'est la version à utiliser pour toute interaction avec les tuiles.
+   */
+  pointerToFarmTile,
 
   /** Écoute les mouvements pointeur sur le canvas et appelle le callback avec les infos de tile */
   onPointerTile,

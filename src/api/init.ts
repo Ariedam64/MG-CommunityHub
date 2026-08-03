@@ -6,6 +6,7 @@ import { openFriendRequestsStream } from "./streams/friends";
 import { openMessagesStream } from "./streams/messages";
 import { openGroupsStream } from "./streams/groups";
 import { openPresenceStream } from "./streams/presence";
+import { startChessFeature, stopChessFeature } from "@/game/chess/chessWiring";
 import type { StreamHandle } from "./types";
 
 type StreamManager = {
@@ -65,6 +66,13 @@ function startAllStreams(): void {
   } catch (error) {
     console.error("[AriesAPI] Failed to start presence stream:", error);
   }
+
+  // Chess: another subscriber on the same connection, not another connection.
+  try {
+    startChessFeature(tempPlayerId);
+  } catch (error) {
+    console.error("[AriesAPI] Failed to start chess feature:", error);
+  }
 }
 
 /**
@@ -74,6 +82,12 @@ function stopAllStreams(): void {
   if (_manager.handles.length === 0) return;
 
   console.log(`[AriesAPI] Stopping ${_manager.handles.length} active streams`);
+
+  try {
+    stopChessFeature();
+  } catch {
+    /* ignore */
+  }
 
   for (const handle of _manager.handles) {
     try {
