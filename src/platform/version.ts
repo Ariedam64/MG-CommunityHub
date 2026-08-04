@@ -95,8 +95,12 @@ async function fetchText(url: string, options?: FetchOptions): Promise<string> {
 
 /** Fetch just the head of the published userscript. */
 async function fetchScriptHeader(): Promise<string> {
-  // Cache-buster: raw.githubusercontent.com caches aggressively, and a stale
-  // answer would hide a fresh release.
+  // The query param defeats the browser's own HTTP cache (GM_xmlhttpRequest
+  // has no no-store option, so it needs the help). It does NOT defeat
+  // GitHub's CDN, which normalises the query string away and holds a
+  // response for a few minutes — measured, not assumed. So a check run
+  // immediately after a release can miss it by up to ~5 minutes. Harmless:
+  // automatic checks are hours apart, and the next one picks it up.
   const url = `${RAW_SCRIPT_URL}?t=${Date.now()}`;
   return await fetchText(url, { headers: { Range: `bytes=0-${METADATA_BYTES - 1}` } });
 }
