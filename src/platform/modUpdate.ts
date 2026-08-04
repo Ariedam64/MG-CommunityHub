@@ -158,17 +158,42 @@ export function startUpdateWatch(): void {
   });
 }
 
+export type OpenUpdateResult = "opened" | "blocked";
+
 /**
  * Send the user to the published script so their manager offers the update.
  * A userscript cannot replace itself, so this is as far as we can take it.
+ *
+ * GM_openInTab is the path that matters: the script manager opens the tab
+ * from the extension, so it is not subject to the sandbox of whatever frame
+ * we happen to be running in. That is what makes this work inside the
+ * Discord activity iframe, where window.open is likely to be refused.
+ *
+ * Returns "blocked" when no tab could be opened, so the caller can fall
+ * back to showing the address.
  */
-export function openUpdatePage(): void {
+export function openUpdatePage(): OpenUpdateResult {
   const url = getDownloadUrl();
 
   if (typeof GM_openInTab === "function") {
-    GM_openInTab(url, { active: true, insert: true });
-    return;
+    try {
+      GM_openInTab(url, { active: true, insert: true });
+      return "opened";
+    } catch {
+      /* fall through to window.open */
+    }
   }
 
-  window.open(url, "_blank", "noopener,noreferrer");
+  // A blocked popup returns null; a sandboxed frame can also throw outright.
+  try {
+    const opened = window.open(url, "_blank", "noopener,noreferrer");
+    return opened ? "opened" : "blocked";
+  } catch {
+    return "blocked";
+  }
+}
+
+/** The address of the published script, for the copy fallback. */
+export function getUpdateUrl(): string {
+  return getDownloadUrl();
 }

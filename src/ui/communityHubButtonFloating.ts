@@ -72,6 +72,34 @@ function clampCoord(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+/**
+ * Where the button should sit on screen, given where the player wants it and
+ * how big the viewport is right now.
+ *
+ * `desired` is null until the player drags it, which is what keeps the
+ * default spot glued to the right edge whatever the window size.
+ *
+ * The result is bounded to the viewport, but the bounding is never fed back
+ * into `desired` — that is the whole point. A viewport that is briefly narrow
+ * (the game's iframe before it is sized) must not permanently move a
+ * right-edge button towards the middle of the screen.
+ */
+export function resolveDisplayPosition(
+  desired: WidgetPosition | null,
+  viewportWidth: number,
+  viewportHeight: number,
+): WidgetPosition {
+  const target = desired ?? {
+    left: viewportWidth - BUTTON_SIZE - DEFAULT_RIGHT_GAP,
+    top: viewportHeight * DEFAULT_TOP_RATIO,
+  };
+
+  return {
+    left: clampCoord(target.left, SCREEN_MARGIN, viewportWidth - BUTTON_SIZE - SCREEN_MARGIN),
+    top: clampCoord(target.top, SCREEN_MARGIN, viewportHeight - BUTTON_SIZE - SCREEN_MARGIN),
+  };
+}
+
 export function startCommunityHubButtonFloating(
   opts: CommunityHubButtonFloatingOptions,
 ): CommunityHubButtonFloatingController {
@@ -112,36 +140,43 @@ export function startCommunityHubButtonFloating(
   } as CSSStyleDeclaration);
   button.appendChild(icon);
 
-  const applyPosition = (left: number, top: number): WidgetPosition => {
-    const boundedLeft = clampCoord(left, SCREEN_MARGIN, window.innerWidth - BUTTON_SIZE - SCREEN_MARGIN);
-    const boundedTop = clampCoord(top, SCREEN_MARGIN, window.innerHeight - BUTTON_SIZE - SCREEN_MARGIN);
-    button.style.left = `${Math.round(boundedLeft)}px`;
-    button.style.top = `${Math.round(boundedTop)}px`;
+  const applyPosition = (pos: WidgetPosition): WidgetPosition => {
+    button.style.left = `${Math.round(pos.left)}px`;
+    button.style.top = `${Math.round(pos.top)}px`;
     try {
       opts.onMoved?.();
     } catch {
       /* ignore */
     }
-    return { left: boundedLeft, top: boundedTop };
+    return pos;
   };
 
-  const applyInitialPosition = () => {
-    const saved = readSavedPosition();
-    if (saved) {
-      applyPosition(saved.left, saved.top);
-      return;
-    }
-    applyPosition(window.innerWidth - BUTTON_SIZE - DEFAULT_RIGHT_GAP, window.innerHeight * DEFAULT_TOP_RATIO);
-  };
+  // Where the player put it, unclamped. Kept apart from what is on screen on
+  // purpose: the game's iframe is often narrower when we start up than it
+  // ends up being, and bounding a right-edge position into that narrow
+  // viewport would drag the button towards the middle. Re-deriving the
+  // on-screen spot from this value means widening the viewport puts the
+  // button back where it belongs instead of stranding it mid-screen.
+  // Null until the player drags it, so the default keeps following the
+  // viewport.
+  let desiredPosition: WidgetPosition | null = readSavedPosition();
 
-  const clampIntoViewport = () => {
-    const rect = button.getBoundingClientRect();
-    applyPosition(rect.left, rect.top);
+  const refreshPosition = () => {
+    applyPosition(resolveDisplayPosition(desiredPosition, window.innerWidth, window.innerHeight));
   };
 
   const onWindowResize = () => {
     if (!running) return;
-    clampIntoViewport();
+    refreshPosition();
+  };
+
+  // The viewport is not always settled when we start (document-start, and the
+  // Discord activity iframe is sized after the fact). A resize normally
+  // follows and fixes it, but not every host emits one, so re-apply once the
+  // page has finished loading too. Harmless when nothing changed.
+  const onWindowLoad = () => {
+    if (!running) return;
+    refreshPosition();
   };
 
   // Drag to move; a press that never travels past the threshold is a click.
@@ -161,7 +196,13 @@ export function startCommunityHubButtonFloating(
     const dy = ev.clientY - dragState.startY;
     if (!dragState.dragged && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
     dragState.dragged = true;
-    dragState.lastPos = applyPosition(dragState.baseLeft + dx, dragState.baseTop + dy);
+    dragState.lastPos = applyPosition(
+      resolveDisplayPosition(
+        { left: dragState.baseLeft + dx, top: dragState.baseTop + dy },
+        window.innerWidth,
+        window.innerHeight,
+      ),
+    );
   };
 
   const stopDrag = (ev?: PointerEvent) => {
@@ -176,7 +217,11 @@ export function startCommunityHubButtonFloating(
       /* ignore */
     }
     const wasDrag = dragState.dragged;
-    if (wasDrag) persistPosition(dragState.lastPos);
+    if (wasDrag) {
+      // A drag is the only thing that changes where the player wants it.
+      desiredPosition = dragState.lastPos;
+      persistPosition(dragState.lastPos);
+    }
     dragState = null;
     button.style.cursor = "grab";
     if (!wasDrag && ev?.type === "pointerup") {
@@ -216,8 +261,9 @@ export function startCommunityHubButtonFloating(
 
   button.addEventListener("pointerdown", onPointerDown);
   window.addEventListener("resize", onWindowResize);
+  window.addEventListener("load", onWindowLoad);
   document.body.appendChild(button);
-  applyInitialPosition();
+  refreshPosition();
 
   return {
     stop() {
@@ -225,6 +271,7 @@ export function startCommunityHubButtonFloating(
       running = false;
       stopDrag();
       window.removeEventListener("resize", onWindowResize);
+      window.removeEventListener("load", onWindowLoad);
       button.removeEventListener("pointerdown", onPointerDown);
       try {
         button.remove();
