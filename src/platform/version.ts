@@ -1,23 +1,41 @@
+// src/platform/version.ts
+// Reads the userscript metadata block of the published build so the mod can
+// tell whether a newer version is available.
+//
+// The published dist file is the source of truth, not meta.userscript.js:
+// bumping the meta without rebuilding would advertise a version nobody can
+// actually install.
+//
+// The dist file is ~500 KB and we only need the header, so the request asks
+// for the first couple of kilobytes with a Range header. GitHub's raw CDN
+// honours it; if anything in the chain ignores it we simply get the whole
+// file back, which still parses fine.
+
 import { isDiscordSurface } from "./api";
 
 const REPO_OWNER = "Ariedam64";
-const REPO_NAME = "MG-AriesMod";
+const REPO_NAME = "MG-CommunityHub";
 const REPO_BRANCH = "main";
-const SCRIPT_FILE_PATH = "quinoa-ws.min.user.js";
+const SCRIPT_FILE_PATH = "dist/mg-community-hub.user.js";
 
-const RAW_BASE_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}`;
-const COMMITS_API_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/commits/${REPO_BRANCH}`;
+const RAW_SCRIPT_URL =
+  `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}` +
+  `/refs/heads/${REPO_BRANCH}/${SCRIPT_FILE_PATH}`;
 
-type RemoteVersionResponse = {
+/** Enough for the metadata block with room to spare. */
+const METADATA_BYTES = 4096;
+
+const REQUEST_TIMEOUT_MS = 15_000;
+
+export type RemoteVersionResponse = {
   version?: string;
   download?: string;
-  forced?: boolean;
 };
 
-type FetchOptions = RequestInit & { cache?: RequestCache };
+type FetchOptions = { headers?: Record<string, string> };
 
 async function fetchTextWithFetch(url: string, options?: FetchOptions): Promise<string> {
-  const response = await fetch(url, { cache: "no-store", ...options });
+  const response = await fetch(url, { cache: "no-store", headers: options?.headers });
 
   if (!response.ok) {
     throw new Error(`Failed to load remote resource: ${response.status} ${response.statusText}`);
@@ -26,110 +44,87 @@ async function fetchTextWithFetch(url: string, options?: FetchOptions): Promise<
   return await response.text();
 }
 
-async function fetchTextWithGM(url: string, options?: FetchOptions): Promise<string> {
+function fetchTextWithGM(url: string, options?: FetchOptions): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr =
-      typeof GM_xmlhttpRequest === 'function'
+      typeof GM_xmlhttpRequest === "function"
         ? GM_xmlhttpRequest
-        : (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function'
-            ? GM.xmlHttpRequest
-            : null);
+        : typeof GM !== "undefined" && typeof GM.xmlHttpRequest === "function"
+          ? GM.xmlHttpRequest
+          : null;
 
-    if (!xhr) return reject(new Error('GM_xmlhttpRequest not available'));
+    if (!xhr) {
+      reject(new Error("GM_xmlhttpRequest not available"));
+      return;
+    }
 
     xhr({
-      method: 'GET',
+      method: "GET",
       url,
-      headers: options?.headers as Record<string, string> | undefined,
+      headers: options?.headers,
+      timeout: REQUEST_TIMEOUT_MS,
       onload: (res) => {
+        // 206 Partial Content is the expected answer to a Range request.
         if (res.status >= 200 && res.status < 300) resolve(res.responseText);
-        else reject(new Error(`GM_xhr failed: ${res.status}`));
+        else reject(new Error(`GM_xmlhttpRequest failed: ${res.status}`));
       },
-      onerror: (e) => reject(e as any),
-    } as Tampermonkey.Request); // cast ok, on ne passe que des champs valides
+      onerror: () => reject(new Error("GM_xmlhttpRequest failed")),
+      ontimeout: () => reject(new Error("GM_xmlhttpRequest timed out")),
+    } as Tampermonkey.Request);
   });
 }
 
 async function fetchText(url: string, options?: FetchOptions): Promise<string> {
-  const preferGM = isDiscordSurface();
   const hasGM =
     typeof GM_xmlhttpRequest === "function" ||
     (typeof GM !== "undefined" && typeof GM.xmlHttpRequest === "function");
 
-  if (preferGM && hasGM) {
+  // Inside the Discord activity the page CSP blocks cross-origin fetch, so GM
+  // is the only transport that works there.
+  if (isDiscordSurface() && hasGM) {
     return await fetchTextWithGM(url, options);
   }
 
   try {
     return await fetchTextWithFetch(url, options);
   } catch (error) {
-    if (hasGM) {
-      return await fetchTextWithGM(url, options);
-    }
-
+    if (hasGM) return await fetchTextWithGM(url, options);
     throw error;
   }
 }
 
-async function fetchLatestCommitSha(): Promise<string | null> {
-  try {
-    const responseText = await fetchText(COMMITS_API_URL, {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-
-    const data = JSON.parse(responseText) as { sha?: string } | null;
-    if (data && typeof data.sha === "string" && data.sha.trim().length > 0) {
-      return data.sha.trim();
-    }
-  } catch (error) {
-    console.warn("[MagicGarden] Failed to resolve latest commit SHA:", error);
-  }
-
-  return null;
-}
-
-async function fetchScriptSource(): Promise<string> {
-  const commitSha = await fetchLatestCommitSha();
-
-  const scriptUrl = commitSha
-    ? `${RAW_BASE_URL}/${commitSha}/dist/${SCRIPT_FILE_PATH}`
-    : `${RAW_BASE_URL}/refs/heads/${REPO_BRANCH}/dist/${SCRIPT_FILE_PATH}?t=${Date.now()}`;
-
-  return await fetchText(scriptUrl);
+/** Fetch just the head of the published userscript. */
+async function fetchScriptHeader(): Promise<string> {
+  // Cache-buster: raw.githubusercontent.com caches aggressively, and a stale
+  // answer would hide a fresh release.
+  const url = `${RAW_SCRIPT_URL}?t=${Date.now()}`;
+  return await fetchText(url, { headers: { Range: `bytes=0-${METADATA_BYTES - 1}` } });
 }
 
 export async function fetchRemoteVersion(): Promise<RemoteVersionResponse | null> {
   try {
-    const scriptSource = await fetchScriptSource();
-    const meta = extractUserscriptMetadata(scriptSource);
+    const header = await fetchScriptHeader();
+    const meta = extractUserscriptMetadata(header);
 
-    if (!meta) {
-      throw new Error("Metadata block not found in remote script");
-    }
-
-    const version = meta.get("version")?.[0];
-    const download = meta.get("downloadurl")?.[0] ?? meta.get("updateurl")?.[0];
+    if (!meta) throw new Error("Metadata block not found in remote script");
 
     return {
-      version,
-      download,
+      version: meta.get("version")?.[0],
+      download: meta.get("downloadurl")?.[0] ?? meta.get("updateurl")?.[0],
     };
   } catch (error) {
-    console.error("Unable to retrieve remote version:", error);
+    console.warn("[CommunityHub] Unable to retrieve the remote version:", error);
     return null;
   }
 }
 
 type UserscriptMetadata = Map<string, string[]>;
 
-function extractUserscriptMetadata(source: string): UserscriptMetadata | null {
+export function extractUserscriptMetadata(source: string): UserscriptMetadata | null {
   const headerMatch = source.match(/\/\/ ==UserScript==([\s\S]*?)\/\/ ==\/UserScript==/);
-  if (!headerMatch) {
-    return null;
-  }
+  if (!headerMatch) return null;
 
-  const metaBlock = headerMatch[1];
-  const entries = metaBlock.matchAll(/^\/\/\s*@([^\s]+)\s+(.+)$/gm);
+  const entries = headerMatch[1].matchAll(/^\/\/\s*@([^\s]+)\s+(.+)$/gm);
   const meta: UserscriptMetadata = new Map();
 
   for (const [, rawKey, rawValue] of entries) {
@@ -138,11 +133,8 @@ function extractUserscriptMetadata(source: string): UserscriptMetadata | null {
     if (!key) continue;
 
     const current = meta.get(key);
-    if (current) {
-      current.push(value);
-    } else {
-      meta.set(key, [value]);
-    }
+    if (current) current.push(value);
+    else meta.set(key, [value]);
   }
 
   return meta;
@@ -156,20 +148,7 @@ export function getLocalVersion(): string | undefined {
   return undefined;
 }
 
-export async function logRemoteVersion(): Promise<void> {
-  const remoteData = await fetchRemoteVersion();
-
-  const localVersion = getLocalVersion();
-
-  if (localVersion) {
-    console.log(`[MagicGarden] Local version: ${localVersion}`);
-  } else {
-    console.log("[MagicGarden] Local version: unknown");
-  }
-
-  if (remoteData?.version) {
-    console.log(`[MagicGarden] Remote version: ${remoteData.version}`);
-  } else {
-    console.log("[MagicGarden] Remote version: unavailable");
-  }
+/** Where to send the user so the script manager offers the update. */
+export function getDownloadUrl(): string {
+  return RAW_SCRIPT_URL;
 }

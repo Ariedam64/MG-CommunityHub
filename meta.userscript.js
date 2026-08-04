@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         MG Community Hub
 // @namespace    Quinoa
-// @version      0.3.0
+// @version      1.0.0
 // @description  Community Hub for Magic Garden / Magic Circle â€” friends, messages, groups, leaderboard, rooms. Standalone companion of Arie's Mod.
 // @match        https://1227719606223765687.discordsays.com/*
 // @match        https://magiccircle.gg/r/*
@@ -23,6 +23,8 @@
 // @connect      magicgarden.gg
 // @connect      storage.ko-fi.com
 // @connect      images.chesscomfiles.com
+// @connect      raw.githubusercontent.com
+// @connect      github.com
 // @downloadURL  https://github.com/Ariedam64/MG-CommunityHub/raw/refs/heads/main/dist/mg-community-hub.user.js
 // @updateURL    https://github.com/Ariedam64/MG-CommunityHub/raw/refs/heads/main/dist/mg-community-hub.user.js
 // ==/UserScript==

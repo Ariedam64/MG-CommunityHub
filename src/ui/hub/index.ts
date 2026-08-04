@@ -21,6 +21,7 @@ import {
 import { createAuthGate } from "./authGate";
 import { createRoomPrivacyNotice, hasSeenRoomPrivacyNotice } from "./roomPrivacyNotice";
 import { createKofiModal, createKofiNavEntry } from "./kofiModal";
+import { MOD_UPDATE_EVENT, isUpdateAvailable, startUpdateWatch } from "@/platform/modUpdate";
 import "@/buildFlags";
 
 const STYLE_ID = "qws-community-hub-css";
@@ -215,6 +216,10 @@ class CommunityHub {
     if (this.destroyed) return;
     this.updateAllBadges();
   };
+  private handleModUpdate = () => {
+    if (this.destroyed) return;
+    this.updateAllBadges();
+  };
   private handleOverlayOpen = () => {
     // Ignore if this instance dispatched the event itself (prevents circular re-entry)
     // or if the instance has been destroyed but removeEventListener somehow failed
@@ -306,9 +311,13 @@ class CommunityHub {
     window.addEventListener(CH_EVENTS.OPEN_GROUP_CHAT, this.handleOpenGroupChat as EventListener);
     window.addEventListener("qws-friend-overlay-auth-update", this.handleAuthUpdate);
     window.addEventListener("gemini:ch-close-after-decline", this.handleCloseAfterDecline);
+    window.addEventListener(MOD_UPDATE_EVENT, this.handleModUpdate);
 
     // Initial badge update
     this.updateAllBadges();
+
+    // Throttled to once every few hours, so this is a no-op most loads.
+    startUpdateWatch();
   }
 
   private createSlot(): HTMLDivElement {
@@ -384,8 +393,22 @@ class CommunityHub {
       this.setBadgeCount(friendsNavBadge, requestsUnread);
     }
 
-    // Update toolbar badge (total)
-    this.setBadgeCount(this.badge, total);
+    // My Profile carries a plain dot when a newer build is published — there
+    // is nothing to count, so it never shows a number.
+    const updatePending = isUpdateAvailable();
+    const profileNavBadge = this.navBadges.get("myProfile");
+    if (profileNavBadge) {
+      this.setBadgeDot(profileNavBadge, updatePending);
+    }
+
+    // Update toolbar badge (total). An unread count outranks the update dot:
+    // the number is the more urgent signal, and the My Profile dot still
+    // carries the update once the panel is open.
+    if (total > 0) {
+      this.setBadgeCount(this.badge, total);
+    } else {
+      this.setBadgeDot(this.badge, updatePending);
+    }
     this.updateBadgePosition();
   }
 
@@ -396,6 +419,18 @@ class CommunityHub {
     }
     badge.style.display = "inline-flex";
     badge.textContent = count > 99 ? "99+" : String(count);
+    style(badge, { minWidth: "18px", height: "18px", padding: "0 5px" });
+  }
+
+  /** Numberless variant of the badge, for signals with no count. */
+  private setBadgeDot(badge: HTMLSpanElement, visible: boolean): void {
+    if (!visible) {
+      badge.style.display = "none";
+      return;
+    }
+    badge.style.display = "inline-flex";
+    badge.textContent = "";
+    style(badge, { minWidth: "10px", height: "10px", padding: "0" });
   }
 
   private createNavBadge(): HTMLSpanElement {
@@ -534,8 +569,8 @@ class CommunityHub {
       this.nav.appendChild(btn);
       this.tabButtons.set(def.id, btn);
 
-      // Add nav badge for messages and community (friends) tabs
-      if (def.id === "messages" || def.id === "community") {
+      // Nav badges: unread counts on messages/community, update dot on profile
+      if (def.id === "messages" || def.id === "community" || def.id === "myProfile") {
         const navBadge = this.createNavBadge();
         btn.appendChild(navBadge);
         this.navBadges.set(def.id, navBadge);
@@ -691,6 +726,7 @@ class CommunityHub {
     window.removeEventListener(CH_EVENTS.OPEN_GROUP_CHAT, this.handleOpenGroupChat as EventListener);
     window.removeEventListener("qws-friend-overlay-auth-update", this.handleAuthUpdate);
     window.removeEventListener("gemini:ch-close-after-decline", this.handleCloseAfterDecline);
+    window.removeEventListener(MOD_UPDATE_EVENT, this.handleModUpdate);
 
     // Cleanup floating toolbar button
     if (this.hubButtonFloating) {

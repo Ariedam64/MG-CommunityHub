@@ -10,6 +10,7 @@ import {
   isNotificationSoundEnabled,
   setNotificationSoundEnabled,
 } from "../notificationSound";
+import { createModVersionSection, type ModVersionSection } from "./modVersionSection";
 
 export function createMyProfileTab() {
   const container = document.createElement("div");
@@ -494,14 +495,20 @@ export function createMyProfileTab() {
 
   // Initial render
   let renderCount = 0;
+  // Rebuilt on every render, so the previous one has to let go of its
+  // window listener first.
+  let modVersionSection: ModVersionSection | null = null;
   const render = async () => {
     renderCount++;
     console.log(`[MyProfile] render() called (count: ${renderCount})`);
+    modVersionSection?.destroy();
+    modVersionSection = null;
     container.innerHTML = "";
     const header = await createProfileHeader();
     const notificationsSection = createNotificationsSection();
     const privacySection = createPrivacySection();
-    container.append(header, notificationsSection, privacySection);
+    modVersionSection = createModVersionSection();
+    container.append(header, notificationsSection, privacySection, modVersionSection.root);
   };
 
   // Initial render to show placeholder or data
@@ -528,6 +535,8 @@ export function createMyProfileTab() {
     hide: () => style(container, { display: "none" }),
     destroy: () => {
       unsubscribeWelcome();
+      modVersionSection?.destroy();
+      modVersionSection = null;
       container.remove();
     },
   };
