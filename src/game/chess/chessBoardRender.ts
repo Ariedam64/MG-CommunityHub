@@ -26,6 +26,7 @@ import {
   type RenderConfig,
 } from "./chessBoardLayout";
 import { ACTIVE_BOARD_KEY, clearTintedBoard, refreshTints } from "./chessBoardTint";
+import { dressTile, undressTile } from "./chessPieceSkin";
 import {
   BOARD_SIZE,
   type ChessGame,
@@ -266,10 +267,17 @@ export function renderSquare(square: Square, piece: ChessPiece | null): void {
 
   const { tx, ty } = squareToTile(square);
   if (!piece) {
+    // Before emptying, not after: the image is a child of the tile view, and
+    // the view outlives the decor it held.
+    undressTile(tx, ty);
     emptyTile(tx, ty);
     return;
   }
   placeDecorTile(tx, ty, config.decorIds[piece.kind]);
+  // Dresses the decor we just placed with a real chess piece image. A no-op
+  // until the images have loaded, and after a failed load, so the decor stays
+  // the fallback rather than the board going empty.
+  dressTile(tx, ty, piece);
 }
 
 /** Draws every piece of a position, emptying the squares that hold none. */
@@ -288,6 +296,19 @@ export function teardownRender(): void {
   // Only ours: boards being watched elsewhere in the room keep their tint, and
   // keep needing it re-asserted every frame.
   clearTintedBoard(ACTIVE_BOARD_KEY);
+
+  // Every square, while the layout still says which tiles they are - the
+  // piece images are children of the tile views, and restoring the garden
+  // puts the original objects back without touching what we added to them.
+  // Skipping this leaves a whole position floating over the garden.
+  if (getLayout()) {
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      for (let col = 0; col < BOARD_SIZE; col++) {
+        const { tx, ty } = squareToTile({ col, row });
+        undressTile(tx, ty);
+      }
+    }
+  }
 
   boardOverlay = removeOverlay(boardOverlay);
   hintOverlay = removeOverlay(hintOverlay);

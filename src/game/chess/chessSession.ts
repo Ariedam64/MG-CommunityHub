@@ -28,6 +28,7 @@ import { addCachedChessChallenge, invalidateFriendChessMatches } from "@/api/cac
 import { isDiscordActivityContext } from "@/platform/discordCsp";
 import { toastSimple } from "@/ui/toast";
 import { createChessHud, type ChessHudController } from "@/ui/hub/chessHud";
+import { isFlatPiecesEnabled, setFlatPiecesEnabled } from "./chessPieceSkin";
 import { CH_EVENTS } from "@/ui/hub/shared";
 import { tos } from "@/game/tileObjectSystem";
 import { readSharedGlobal, shareGlobal } from "@/platform/page-context";
@@ -277,6 +278,8 @@ function beginSession(
     onResign: () => void doResign(),
     onToggleHidden: () => void toggleBoardHidden(),
     onFlip: () => void flipBoardView(),
+    flatPieces: isFlatPiecesEnabled(),
+    onToggleFlatPieces: (flat) => void switchPieceView(flat),
     onOfferDraw: () => void doDraw("offer"),
     onAcceptDraw: () => void doDraw("accept"),
     onDeclineDraw: () => void doDraw("decline"),
@@ -423,6 +426,20 @@ async function toggleBoardHidden(): Promise<void> {
 }
 
 /** Looks at the board from the other side. */
+/**
+ * Swaps the flat pieces for the game's props, or back. The board is remounted
+ * rather than repainted in place: the two views are placed by different code
+ * paths, and remounting is the one route already known to leave the tiles,
+ * the tints and the marks in a consistent state.
+ */
+async function switchPieceView(flat: boolean): Promise<void> {
+  if (!session || session.hidden) return;
+
+  setFlatPiecesEnabled(flat);
+  await remountBoard();
+  paintCaptures();
+}
+
 async function flipBoardView(): Promise<void> {
   if (!session || session.hidden) return;
 

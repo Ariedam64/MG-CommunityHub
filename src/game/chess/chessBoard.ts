@@ -65,6 +65,7 @@ import {
   stopChessSounds,
   type ChessSoundName,
 } from "./chessBoardSounds";
+import { preloadPieceSkin, undressTile } from "./chessPieceSkin";
 import {
   BOARD_SIZE,
   affectedSquares,
@@ -658,6 +659,9 @@ export async function paintChessBoard(
   let sceneryPlaced = 0;
   if (shouldClearGarden && garden) {
     for (const { tx, ty } of garden.tiles) {
+      // Tile views are reused, so an image left by the previous board would
+      // outlive it. Cheap, and it guarantees a clean garden on every mount.
+      undressTile(tx, ty);
       if (emptyTile(tx, ty)) tilesCleared++;
     }
 
@@ -709,6 +713,12 @@ export async function paintChessBoard(
     // waits for it rather than playing into an empty cache.
     void preloadChessSounds().then(() => {
       if (game && ply === 0) playChessSound("gameStart");
+    });
+
+    // Same idea for the piece images, except the board is already on screen by
+    // now: the decor pieces show first and are dressed once the images land.
+    void preloadPieceSkin().then((loaded) => {
+      if (loaded && game) renderPosition(game);
     });
   }
 

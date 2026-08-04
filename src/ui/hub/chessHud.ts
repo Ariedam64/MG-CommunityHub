@@ -78,6 +78,14 @@ export type ChessHudOptions = {
   onToggleHidden?: () => void;
   /** Spectator only: look at the board from the other side. */
   onFlip?: () => void;
+  /**
+   * Swap between the flat chess pieces and the game's own props. Both roles
+   * get it: a spectator has as much reason to want a readable board as the
+   * player does. Receives the mode being switched to.
+   */
+  onToggleFlatPieces?: (flat: boolean) => void;
+  /** Which of the two views the board is showing right now. */
+  flatPieces?: boolean;
   onLeave: () => void;
 };
 
@@ -243,10 +251,26 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
       ? button("Flip", () => options.onFlip?.())
       : null;
 
+  // Labelled with the view it switches to, not the one in use - a button that
+  // reads "2D" while the board already is 2D reads as a broken toggle.
+  let flatPieces = options.flatPieces !== false;
+  const viewButton = options.onToggleFlatPieces
+    ? button(flatPieces ? "3D" : "2D", () => {
+        flatPieces = !flatPieces;
+        viewButton!.textContent = flatPieces ? "3D" : "2D";
+        viewButton!.title = flatPieces ? "Switch to the garden pieces" : "Switch to flat pieces";
+        options.onToggleFlatPieces?.(flatPieces);
+      })
+    : null;
+  if (viewButton) {
+    viewButton.title = flatPieces ? "Switch to the garden pieces" : "Switch to flat pieces";
+  }
+
   if (drawButton) controls.appendChild(drawButton);
   if (resignButton) controls.appendChild(resignButton);
   if (hideButton) controls.appendChild(hideButton);
   if (flipButton) controls.appendChild(flipButton);
+  if (viewButton) controls.appendChild(viewButton);
   if (options.role === "spectator") controls.appendChild(leaveButton);
 
   // ── Promotion ──────────────────────────────────────────────────────────────
