@@ -15,14 +15,26 @@
 
 import { tos } from "@/game/tileObjectSystem";
 import { resolveTileRoot } from "./chessBoardTiles";
-import { getLayout, squareToTile } from "./chessBoardLayout";
+import { getLayout, squareToTileIn, type RenderConfig } from "./chessBoardLayout";
 import { BOARD_SIZE, type ChessGame } from "./chessRules";
 
 /** Original tint of every node we recoloured, so clearing can undo it. */
 const tintBaselines = new Map<any, number>();
 
-/** Position the tint loop keeps asserting, kept in step with the last refresh. */
-let tintedGame: ChessGame | null = null;
+type TintedBoard = { game: ChessGame; config: RenderConfig };
+
+/**
+ * Every board the loop keeps asserting, by key. More than one is normal: games
+ * happening in the room are drawn on their own players' gardens, and their
+ * black pieces need darkening just as much as ours.
+ *
+ * Their tiles are disjoint by construction - two boards cannot share a garden
+ * square - so one baseline map across all of them is safe.
+ */
+const tintedBoards = new Map<string, TintedBoard>();
+
+/** Key of the board being played on, as opposed to the ones merely watched. */
+export const ACTIVE_BOARD_KEY = "active";
 
 let tintFrame: number | null = null;
 let tintTicker: (() => void) | null = null;
@@ -89,8 +101,7 @@ function collectTintTargets(root: any, cap = 900): any[] {
  * is assigned, never accumulated, so running this every frame cannot darken
  * anything twice.
  */
-function applyTints(game: ChessGame): void {
-  const config = getLayout();
+function applyBoardTints({ game, config }: TintedBoard): void {
   if (!config?.tintPieces) return;
 
   for (let row = 0; row < BOARD_SIZE; row++) {
@@ -98,7 +109,7 @@ function applyTints(game: ChessGame): void {
       const piece = game.board[row][col];
       if (piece?.side !== "black") continue;
 
-      const { tx, ty } = squareToTile({ col, row });
+      const { tx, ty } = squareToTileIn(config, { col, row });
       const root = resolveTileRoot(tx, ty);
       if (!root) continue;
 
@@ -115,11 +126,12 @@ function applyTints(game: ChessGame): void {
 }
 
 function retintOnce(): void {
-  if (!tintedGame) return;
-  try {
-    applyTints(tintedGame);
-  } catch {
-    /* ignore */
+  for (const board of tintedBoards.values()) {
+    try {
+      applyBoardTints(board);
+    } catch {
+      /* one bad board must not stop the others being re-asserted */
+    }
   }
 }
 
@@ -177,20 +189,40 @@ function releaseTints(): void {
 }
 
 /**
- * Points the tint loop at a position. Tints are released first: vacated tiles
- * have their sprite nodes recycled by the tile system, and a stale tint left on
- * one would darken whatever object lands there next.
+ * Points the tint loop at one board's position. Tints are released first:
+ * vacated tiles have their sprite nodes recycled by the tile system, and a
+ * stale tint left on one would darken whatever object lands there next.
+ *
+ * The release is global rather than per board, so a board moving its pieces
+ * makes the others reassert theirs on the next pass. They do that every frame
+ * anyway.
  */
-export function refreshTints(game: ChessGame): void {
+export function setTintedBoard(key: string, game: ChessGame, config: RenderConfig | null): void {
+  if (!config) return;
+
   releaseTints();
-  tintedGame = game;
-  applyTints(game);
+  tintedBoards.set(key, { game, config });
+  retintOnce();
   startTintLoop();
 }
 
-/** Stops the loop and restores every sprite we touched. */
+/** Drops one board from the loop and lets its sprites go back to normal. */
+export function clearTintedBoard(key: string): void {
+  if (!tintedBoards.delete(key)) return;
+
+  releaseTints();
+  if (tintedBoards.size === 0) stopTintLoop();
+  else retintOnce();
+}
+
+/** The board being played on. */
+export function refreshTints(game: ChessGame): void {
+  setTintedBoard(ACTIVE_BOARD_KEY, game, getLayout());
+}
+
+/** Stops the loop and restores every sprite we touched, on every board. */
 export function teardownTints(): void {
   stopTintLoop();
-  tintedGame = null;
+  tintedBoards.clear();
   releaseTints();
 }

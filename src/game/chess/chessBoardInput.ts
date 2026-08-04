@@ -5,6 +5,9 @@
 // state machine, so they never fight: a press becomes a drag only once the
 // pointer travels past a small threshold, and stays a click otherwise.
 //
+// The right button never moves anything: it draws the annotations, on its own
+// small state machine, and the two can't run at the same time.
+//
 // Display only - the module decides *what was pointed at*, never whether a move
 // is legal; that is the caller's job through `isLegalTarget`.
 //
@@ -34,10 +37,22 @@ export type ChessBoardInteraction = {
    * already carried there by hand.
    */
   playMove(from: ChessSquare, to: ChessSquare, animate: boolean): void;
+
+  /**
+   * Annotations. Display only, and always allowed - a player thinks about the
+   * position on the opponent's clock too, and a finished board is still worth
+   * drawing on.
+   */
+  markSquare(square: ChessSquare): void;
+  markArrow(from: ChessSquare, to: ChessSquare): void;
+  clearMarks(): void;
 };
 
 /** While dragged, the piece must float above the other pieces. */
 const DRAG_Z_INDEX = 999999;
+
+const LEFT_BUTTON = 0;
+const RIGHT_BUTTON = 2;
 
 /**
  * Travel in CSS pixels past which a press stops being a click and becomes a
@@ -65,12 +80,15 @@ type PressState = {
 
 let interaction: ChessBoardInteraction | null = null;
 let press: PressState | null = null;
+/** The square a held right button started on. Nothing is drawn until it lifts. */
+let markPress: ChessSquare | null = null;
 let selected: ChessSquare | null = null;
 let listenersInstalled = false;
 
 function sameSquare(a: ChessSquare, b: ChessSquare): boolean {
   return a.tx === b.tx && a.ty === b.ty;
 }
+
 
 /**
  * Continuous pointer position in worldContainer space - the same projection
@@ -95,14 +113,25 @@ function pointerToWorld(ev: PointerEvent): { x: number; y: number } | null {
   return { x: world.x, y: world.y };
 }
 
-/** The tile under the pointer, or null when the pointer isn't on the canvas. */
-function hitSquare(ev: PointerEvent): ChessSquare | null {
+/**
+ * The tile under the pointer, or null when the pointer isn't on the canvas.
+ * Takes any mouse event: the projection only reads the coordinates, and the
+ * context menu has to be resolved to a square the same way a press is.
+ */
+function hitSquare(ev: MouseEvent): ChessSquare | null {
   if (!tos.isReady()) return null;
   const canvas = tos.getCanvas();
   if (!canvas || ev.target !== canvas) return null;
 
-  const info = tos.pointerToFarmTile(ev);
+  const info = tos.pointerToFarmTile(ev as PointerEvent);
   return info ? { tx: info.tx, ty: info.ty } : null;
+}
+
+/** A square that belongs to the board, or null for anything else. */
+function hitBoardSquare(ev: MouseEvent): ChessSquare | null {
+  const square = hitSquare(ev);
+  if (!square || !interaction?.isBoardSquare(square)) return null;
+  return square;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -142,7 +171,45 @@ function endPress(): void {
 
 function cancelInteraction(): void {
   endPress();
+  markPress = null;
   clearSelection();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Annotations                                                                */
+/* -------------------------------------------------------------------------- */
+
+/** A right press on the board opens an annotation; anywhere else is ignored. */
+function beginMarkPress(ev: PointerEvent): void {
+  if (!interaction || press || markPress) return;
+
+  const square = hitBoardSquare(ev);
+  if (!square) return;
+
+  markPress = square;
+
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+/**
+ * Releasing decides which annotation it was: on the square it started from it
+ * marks that square, on another it draws the arrow, and off the board it
+ * cancels. Only here does anything appear - the drag itself draws nothing.
+ */
+function finishMarkPress(ev: PointerEvent): void {
+  const from = markPress;
+  markPress = null;
+  if (!from || !interaction) return;
+
+  ev.preventDefault();
+  ev.stopPropagation();
+
+  const square = hitBoardSquare(ev);
+  if (!square) return;
+
+  if (sameSquare(square, from)) interaction.markSquare(square);
+  else interaction.markArrow(from, square);
 }
 
 function beginPress(ev: PointerEvent, square: ChessSquare): boolean {
@@ -178,10 +245,24 @@ function travelledFarEnough(ev: PointerEvent): boolean {
 /* -------------------------------------------------------------------------- */
 
 function handlePointerDown(ev: PointerEvent): void {
-  if (!interaction || press || ev.button !== 0) return;
+  if (!interaction) return;
+
+  if (ev.button === RIGHT_BUTTON) {
+    beginMarkPress(ev);
+    return;
+  }
+
+  if (press || ev.button !== LEFT_BUTTON) return;
 
   const square = hitSquare(ev);
   if (!square) return;
+
+  // Any left click on the board wipes the annotations, whatever it goes on to
+  // do - which is how a move clears them too, since a move starts with one.
+  if (interaction.isBoardSquare(square)) {
+    markPress = null;
+    interaction.clearMarks();
+  }
 
   // Second click of a click-to-move: the selected piece goes to this square.
   if (
@@ -229,6 +310,14 @@ function handlePointerDown(ev: PointerEvent): void {
 }
 
 function handlePointerMove(ev: PointerEvent): void {
+  // A right button dragging out an arrow draws nothing on the way, but the
+  // board still swallows the move: the game must not read it as anything.
+  if (markPress) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+
   if (!press) return;
 
   if (!press.dragging) {
@@ -259,6 +348,16 @@ function handlePointerMove(ev: PointerEvent): void {
 }
 
 function handlePointerUp(ev: PointerEvent): void {
+  if (markPress && ev.button === RIGHT_BUTTON) {
+    finishMarkPress(ev);
+    return;
+  }
+
+  // Only the button that picked the piece up can drop it: releasing the other
+  // one mid-drag would land the move somewhere the player never aimed at.
+  // Touch and pen both report 0 here, so they still go through.
+  if (ev.button !== LEFT_BUTTON) return;
+
   if (!press || !interaction) return;
 
   const { square: from, dragging, wasSelected } = press;
@@ -286,6 +385,18 @@ function handlePointerUp(ev: PointerEvent): void {
   interaction.playMove(from, target, false);
 }
 
+/**
+ * Only over the board: a right click anywhere else on the canvas keeps its
+ * menu. It needs its own listener because the menu is not opened by the press
+ * or the release - browsers pick one or the other - and preventing it there
+ * would only work on half of them.
+ */
+function handleContextMenu(ev: MouseEvent): void {
+  if (!interaction || !hitBoardSquare(ev)) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
 /* -------------------------------------------------------------------------- */
 /* Wiring                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -298,6 +409,7 @@ function installListeners(): void {
   window.addEventListener("pointermove", handlePointerMove, true);
   window.addEventListener("pointerup", handlePointerUp, true);
   window.addEventListener("pointercancel", cancelInteraction, true);
+  window.addEventListener("contextmenu", handleContextMenu, true);
 }
 
 function removeListeners(): void {
@@ -308,6 +420,7 @@ function removeListeners(): void {
   window.removeEventListener("pointermove", handlePointerMove, true);
   window.removeEventListener("pointerup", handlePointerUp, true);
   window.removeEventListener("pointercancel", cancelInteraction, true);
+  window.removeEventListener("contextmenu", handleContextMenu, true);
 }
 
 /** Enables board input. Calling it again swaps the handlers, never stacks listeners. */

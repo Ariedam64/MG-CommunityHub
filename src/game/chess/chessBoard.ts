@@ -8,8 +8,11 @@
 //   - chessRules.ts       the position and what is legal from it,
 //   - chessBoardLayout.ts where the board sits, and board <-> map coordinates,
 //   - chessBoardTiles.ts  reading and writing tile views, and undoing that,
+//   - chessScenery.ts     the frame and gallery dressed around the board,
 //   - chessBoardRender.ts squares, pieces, move hints and animations,
+//   - chessOverlay.ts     the Pixi layers all of that is drawn on,
 //   - chessBoardTint.ts   keeping the black side dark,
+//   - chessBoardMarks.ts  the right-click squares and arrows,
 //   - chessBoardInput.ts  click-to-select and drag-and-drop on the board,
 //   - chessBoardSounds.ts the sound effects,
 //   - this file           options, setup, and the move loop joining them.
@@ -21,7 +24,14 @@
 
 import { decorCatalog } from "@/data";
 import { tos } from "@/game/tileObjectSystem";
-import { emptyTile, hasTouchedTiles, readOwnGarden, restoreAllTiles } from "./chessBoardTiles";
+import {
+  emptyTile,
+  hasTouchedTiles,
+  readGarden,
+  readOwnGarden,
+  restoreAllTiles,
+} from "./chessBoardTiles";
+import { applyChessScenery } from "./chessScenery";
 import {
   animatePieceSlide,
   clearMoveHints,
@@ -43,6 +53,12 @@ import {
   stopChessInput,
   type ChessSquare,
 } from "./chessBoardInput";
+import {
+  clearMarks,
+  teardownMarks,
+  toggleMarkedArrow,
+  toggleMarkedSquare,
+} from "./chessBoardMarks";
 import {
   playChessSound,
   preloadChessSounds,
@@ -116,6 +132,12 @@ export type ChessBoardOptions = {
   blackTint?: number;
   /** Empty every garden tile first. Defaults to true. */
   clearGarden?: boolean;
+  /**
+   * Dress the cleared garden with the chess setting: a frame around the 8x8 and
+   * a decorated gallery beside it. Defaults to true, and does nothing when
+   * clearGarden is off since there would be nowhere to put it.
+   */
+  scenery?: boolean;
   /** Set the pieces up. Without them the board is just painted. Defaults to true. */
   placePieces?: boolean;
   /** Tint the black side. Defaults to true. */
@@ -126,6 +148,12 @@ export type ChessBoardOptions = {
    * end. Spectators get White's view.
    */
   flipped?: boolean;
+  /**
+   * Whose garden to draw on. Defaults to your own. Watching a game happening in
+   * your room passes the slot of one of its players, so the board shows up
+   * where it is actually being played rather than on top of your garden.
+   */
+  userSlotIdx?: number;
   /** Allow moving the pieces by click or drag. Defaults to true. */
   enableInput?: boolean;
   /**
@@ -145,6 +173,7 @@ export type ChessBoardResult = {
   originY: number;
   size: number;
   tilesCleared: number;
+  sceneryPlaced: number;
   piecesPlaced: number;
   turn: string | null;
   inputEnabled: boolean;
@@ -517,6 +546,21 @@ function enableInput(): void {
     clearHints: clearMoveHints,
 
     playMove: tryMove,
+
+    // Annotations are the player's own scribbles: they take board squares, not
+    // map tiles, so they follow the board when it is turned round for Black.
+    markSquare: (tile) => {
+      const square = tileToSquare(tile.tx, tile.ty);
+      if (square) toggleMarkedSquare(square);
+    },
+
+    markArrow: (fromTile, toTile) => {
+      const from = tileToSquare(fromTile.tx, fromTile.ty);
+      const to = tileToSquare(toTile.tx, toTile.ty);
+      if (from && to) toggleMarkedArrow(from, to);
+    },
+
+    clearMarks,
   });
 }
 
@@ -549,6 +593,7 @@ export function clearChessBoard(): boolean {
 
   stopChessInput();
   stopChessSounds();
+  teardownMarks();
   teardownRender();
   game = null;
   ply = 0;
@@ -575,7 +620,10 @@ export async function paintChessBoard(
     return null;
   }
 
-  const garden = await readOwnGarden();
+  const garden =
+    options.userSlotIdx == null
+      ? await readOwnGarden()
+      : await readGarden(options.userSlotIdx);
   if (!garden && (options.originX == null || options.originY == null)) {
     console.log("[ChessBoard] could not locate your garden tiles");
     return null;
@@ -583,6 +631,7 @@ export async function paintChessBoard(
 
   const decorIds = { ...DEFAULT_PIECE_DECOR_IDS, ...options.pieceDecorIds };
   const shouldClearGarden = options.clearGarden !== false;
+  const shouldPlaceScenery = options.scenery !== false;
   const shouldPlacePieces = options.placePieces !== false;
   const shouldEnableInput = options.enableInput !== false && shouldPlacePieces;
 
@@ -606,10 +655,16 @@ export async function paintChessBoard(
   clearChessBoard();
 
   let tilesCleared = 0;
+  let sceneryPlaced = 0;
   if (shouldClearGarden && garden) {
     for (const { tx, ty } of garden.tiles) {
       if (emptyTile(tx, ty)) tilesCleared++;
     }
+
+    // Dressing goes on after the clear, never instead of it: emptying first is
+    // what registers every tile's original object with the restore registry, so
+    // the real garden comes back whatever the scenery covered.
+    if (shouldPlaceScenery) sceneryPlaced = applyChessScenery(garden);
   }
 
   if (!paintBoard(config)) {
@@ -664,6 +719,7 @@ export async function paintChessBoard(
     originY: config.originY,
     size: BOARD_SIZE,
     tilesCleared,
+    sceneryPlaced,
     piecesPlaced,
     turn: game?.turn ?? null,
     inputEnabled: shouldEnableInput,

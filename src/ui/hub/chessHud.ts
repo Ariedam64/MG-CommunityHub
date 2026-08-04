@@ -1,16 +1,21 @@
 // src/ui/hub/chessHud.ts
 //
-// The in-game chess panel: both clocks, the game controls, the promotion
-// picker and the result banner.
+// The in-game chess panel: both clocks, the captured pieces, the game controls,
+// the promotion picker and the result banner.
 //
 // It is a plain fixed-position DOM element rather than anything in the game's
-// Pixi tree — same reasoning as communityHubButtonFloating.ts, and the same
-// drag-to-move behaviour, so a player whose board sits under it can push it
-// aside. The position is persisted.
+// Pixi tree, same reasoning as communityHubButtonFloating.ts, and it drags the
+// same way so a player whose board sits under it can push it aside. The
+// position is persisted.
+//
+// Look and behaviour are split: everything visual lives in chessHudStyles.ts,
+// and this file only ever adds and removes classes. Hover states, transitions
+// and the low-time pulse are not expressible inline, which is why.
 
 import { readHubPath, writeHubPath } from "@/storage/storage";
 import { WIDGET_Z_INDEX } from "@/ui/communityHubButtonFloating";
 import { attachSpriteIcon } from "@/ui/spriteIcons";
+import { ensureChessHudStyles } from "./chessHudStyles";
 import { CLOCK_URGENT_MS, formatClock, onChessClockTick } from "@/game/chess/chessClock";
 import { DEFAULT_PIECE_DECOR_IDS } from "@/game/chess/chessBoard";
 import type { ChessColor } from "@/api/types";
@@ -18,7 +23,7 @@ import type { ChessPieceKind } from "@/game/chess/chessRules";
 
 const POS_PATH = "chessHud.pos";
 
-const PANEL_WIDTH = 232;
+const PANEL_WIDTH = 244;
 const SCREEN_MARGIN = 8;
 const DEFAULT_LEFT_GAP = 16;
 const DEFAULT_TOP_GAP = 96;
@@ -27,11 +32,13 @@ const DRAG_THRESHOLD_PX = 4;
 /** Above the floating hub button, so it is never buried by it. */
 const HUD_Z_INDEX = WIDGET_Z_INDEX + 10;
 
-/** Size of a captured-piece sprite in the strip under each clock. */
-const CAPTURE_ICON_PX = 16;
+const CAPTURE_ICON_PX = 15;
+
+/** How long an armed Resign stays armed before it forgets. */
+const RESIGN_ARM_MS = 4000;
 
 /**
- * Standard relative values. The king is never captured, so it has none — and
+ * Standard relative values. The king is never captured, so it has none, and
  * listing it at 0 keeps the record exhaustive rather than relying on it never
  * appearing.
  */
@@ -61,32 +68,36 @@ export type ChessHudOptions = {
   /** Names shown next to each clock. */
   white: string;
   black: string;
-  /** Which side is mine — decides which row sits at the bottom. */
+  /** Which side is mine. Decides which row sits at the bottom. */
   myColor: ChessColor | null;
   onResign?: () => void;
   onOfferDraw?: () => void;
   onAcceptDraw?: () => void;
   onDeclineDraw?: () => void;
+  /** Player only: put the garden back for a moment, then bring the board back. */
+  onToggleHidden?: () => void;
+  /** Spectator only: look at the board from the other side. */
+  onFlip?: () => void;
   onLeave: () => void;
 };
 
 export type ChessHudController = {
   /**
-   * The pieces each side has taken. Keyed by the capturing side, so
-   * `white` holds the black pieces White has won.
+   * The pieces each side has taken, keyed by the capturing side, so `white`
+   * holds the black pieces White has won.
    */
   setCaptures(captures: Record<ChessColor, ChessPieceKind[]>): void;
-  /** Shows or hides the "X offers a draw" banner. */
   setDrawOffer(from: "me" | "them" | null): void;
-  /** Shows the end-of-game banner and disables the game controls. */
+  /** Shows the end-of-game banner and puts the game controls away. */
   setResult(text: string): void;
   /**
    * Opens the promotion picker and resolves with the chosen piece, or null if
-   * the player dismissed it.
+   * it was dismissed.
    */
   askPromotion(): Promise<ChessPieceKind | null>;
   /** Spectator count. Hidden entirely while the server does not report one. */
   setSpectators(count: number | null): void;
+  setHidden(hidden: boolean): void;
   setStatusText(text: string | null): void;
   destroy(): void;
 };
@@ -108,169 +119,102 @@ function clampCoord(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function button(label: string, onClick: () => void): HTMLButtonElement {
-  const el = document.createElement("button");
-  el.type = "button";
-  el.textContent = label;
-  Object.assign(el.style, {
-    flex: "1",
-    padding: "6px 8px",
-    fontSize: "12px",
-    fontFamily: "inherit",
-    color: "#d8e2ec",
-    background: "#1a2531",
-    border: "1px solid #32404e",
-    borderRadius: "6px",
-    cursor: "pointer",
-  } as CSSStyleDeclaration);
-  el.addEventListener("click", (ev) => {
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function button(label: string, onClick: () => void, variant = ""): HTMLButtonElement {
+  const node = el("button", `mgchess-btn${variant ? ` ${variant}` : ""}`, label);
+  node.type = "button";
+  node.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     onClick();
   });
-  return el;
+  return node;
 }
 
 export function createChessHud(options: ChessHudOptions): ChessHudController {
-  const panel = document.createElement("div");
+  ensureChessHudStyles();
+
+  const panel = el("div", "mgchess");
   panel.setAttribute("data-community-hub-chess-hud", "1");
-  Object.assign(panel.style, {
-    position: "fixed",
-    left: "-9999px",
-    top: "-9999px",
-    width: `${PANEL_WIDTH}px`,
-    zIndex: String(HUD_Z_INDEX),
-    padding: "10px",
-    borderRadius: "10px",
-    border: "1px solid #32404e",
-    background: "linear-gradient(180deg, #111923, #0b131c)",
-    boxShadow: "0 10px 28px rgba(0,0,0,0.45)",
-    color: "#d8e2ec",
-    font: "13px/1.4 system-ui, sans-serif",
-    userSelect: "none",
-    touchAction: "none",
-    cursor: "grab",
-  } as CSSStyleDeclaration);
+  panel.style.zIndex = String(HUD_Z_INDEX);
+  panel.style.left = "-9999px";
+  panel.style.top = "-9999px";
 
-  // ── Clock rows ─────────────────────────────────────────────────────────────
+  // ── Header ─────────────────────────────────────────────────────────────────
 
-  function clockRow(side: ChessColor, name: string) {
-    // A block, not a row: the captured strip sits under the name, and the whole
-    // thing highlights together when it is that side's turn.
-    const block = document.createElement("div");
-    Object.assign(block.style, {
-      padding: "5px 6px",
-      borderRadius: "6px",
-    } as CSSStyleDeclaration);
+  const header = el("div", "mgchess-header");
+  const watchers = el("span", "mgchess-watchers");
+  watchers.style.display = "none";
+  header.append(
+    el("span", "mgchess-grip", "⠿"),
+    el("span", "mgchess-title", options.role === "player" ? "Chess" : "Watching"),
+    watchers,
+  );
 
-    const row = document.createElement("div");
-    Object.assign(row.style, {
-      display: "flex",
-      alignItems: "center",
-      gap: "8px",
-    } as CSSStyleDeclaration);
+  // ── Sides ──────────────────────────────────────────────────────────────────
 
-    const dot = document.createElement("span");
-    Object.assign(dot.style, {
-      width: "10px",
-      height: "10px",
-      borderRadius: "50%",
-      flex: "0 0 auto",
-      background: side === "white" ? "#e8e3d6" : "#2b3440",
-      border: "1px solid #5a6675",
-    } as CSSStyleDeclaration);
-
-    const label = document.createElement("span");
-    label.textContent = name;
-    Object.assign(label.style, {
-      flex: "1 1 auto",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-    } as CSSStyleDeclaration);
-
-    const time = document.createElement("span");
-    Object.assign(time.style, {
-      fontVariantNumeric: "tabular-nums",
-      fontWeight: "600",
-      flex: "0 0 auto",
-    } as CSSStyleDeclaration);
-
+  function sideBlock(side: ChessColor, name: string) {
+    const block = el("div", "mgchess-side");
+    const row = el("div", "mgchess-side-row");
+    const dot = el("span", `mgchess-dot is-${side}`);
+    const label = el("span", "mgchess-name", name);
+    const time = el("span", "mgchess-time", "0:00");
     row.append(dot, label, time);
 
-    // The pieces this side has taken, plus its material edge if it leads.
-    const strip = document.createElement("div");
-    Object.assign(strip.style, {
-      display: "none",
-      alignItems: "center",
-      flexWrap: "wrap",
-      gap: "1px",
-      minHeight: `${CAPTURE_ICON_PX}px`,
-      margin: "3px 0 0 18px",
-    } as CSSStyleDeclaration);
-
-    block.append(row, strip);
-    return { block, row, time, strip };
+    const caps = el("div", "mgchess-caps");
+    block.append(row, caps);
+    return { block, time, caps };
   }
 
-  const whiteRow = clockRow("white", options.white);
-  const blackRow = clockRow("black", options.black);
+  const whiteSide = sideBlock("white", options.white);
+  const blackSide = sideBlock("black", options.black);
 
-  // My side at the bottom, matching the board itself — which turns round for
-  // Black. A spectator's board is not turned, so neither is this.
+  // My side at the bottom, matching the board, which turns round for Black. A
+  // spectator's board is not turned, so neither is this.
   const blackAtBottom = options.myColor === "black";
-  const topRow = blackAtBottom ? whiteRow : blackRow;
-  const bottomRow = blackAtBottom ? blackRow : whiteRow;
 
-  const clocks = document.createElement("div");
-  clocks.append(topRow.block, bottomRow.block);
+  const sides = el("div", "mgchess-sides");
+  sides.append(
+    blackAtBottom ? whiteSide.block : blackSide.block,
+    blackAtBottom ? blackSide.block : whiteSide.block,
+  );
 
-  // ── Banners ────────────────────────────────────────────────────────────────
+  // ── Banner, status, controls ───────────────────────────────────────────────
 
-  const banner = document.createElement("div");
-  Object.assign(banner.style, {
-    display: "none",
-    margin: "8px 0 0",
-    padding: "7px 8px",
-    borderRadius: "6px",
-    background: "#1b2735",
-    border: "1px solid #3a4b5e",
-    fontSize: "12px",
-  } as CSSStyleDeclaration);
+  const banner = el("div", "mgchess-banner");
+  const status = el("div", "mgchess-status");
+  const controls = el("div", "mgchess-controls");
 
-  const status = document.createElement("div");
-  Object.assign(status.style, {
-    display: "none",
-    margin: "8px 0 0",
-    fontSize: "11px",
-    color: "#8fa2b5",
-  } as CSSStyleDeclaration);
+  const leaveButton = button(
+    options.role === "player" ? "Close" : "Stop watching",
+    () => options.onLeave(),
+  );
 
-  // ── Controls ───────────────────────────────────────────────────────────────
-
-  const controls = document.createElement("div");
-  Object.assign(controls.style, {
-    display: "flex",
-    gap: "6px",
-    margin: "9px 0 0",
-    alignItems: "center",
-  } as CSSStyleDeclaration);
-
-  const drawButton = options.role === "player" ? button("Draw", () => options.onOfferDraw?.()) : null;
+  const drawButton =
+    options.role === "player" ? button("Draw", () => options.onOfferDraw?.()) : null;
 
   // Two-step rather than a confirm() dialog: inside the Discord Activity iframe
   // a native modal is unreliable, and resigning by misclick is unforgivable.
   let resignArmed = false;
   let resignTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const disarmResign = () => {
+  const disarmResign = (): void => {
     resignArmed = false;
     if (resignTimer) clearTimeout(resignTimer);
     resignTimer = null;
     if (resignButton) {
       resignButton.textContent = "Resign";
-      resignButton.style.color = "#d8e2ec";
-      resignButton.style.borderColor = "#32404e";
+      resignButton.classList.remove("is-danger");
     }
   };
 
@@ -280,95 +224,108 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
           if (!resignArmed) {
             resignArmed = true;
             resignButton!.textContent = "Sure?";
-            resignButton!.style.color = "#ff6b6b";
-            resignButton!.style.borderColor = "#5c2b2b";
-            resignTimer = setTimeout(disarmResign, 4000);
+            resignButton!.classList.add("is-danger");
+            resignTimer = setTimeout(disarmResign, RESIGN_ARM_MS);
             return;
           }
           disarmResign();
           options.onResign?.();
         })
       : null;
-  const leaveButton = button(options.role === "player" ? "Close" : "Stop watching", () => options.onLeave());
 
-  // While the game runs, only the game controls show; Close replaces them once
-  // it is over, so the two can never be confused.
+  const hideButton =
+    options.role === "player" && options.onToggleHidden
+      ? button("Hide", () => options.onToggleHidden?.())
+      : null;
+
+  const flipButton =
+    options.role === "spectator" && options.onFlip
+      ? button("Flip", () => options.onFlip?.())
+      : null;
+
   if (drawButton) controls.appendChild(drawButton);
   if (resignButton) controls.appendChild(resignButton);
+  if (hideButton) controls.appendChild(hideButton);
+  if (flipButton) controls.appendChild(flipButton);
   if (options.role === "spectator") controls.appendChild(leaveButton);
 
-  const spectators = document.createElement("span");
-  Object.assign(spectators.style, {
-    display: "none",
-    flex: "0 0 auto",
-    fontSize: "11px",
-    color: "#8fa2b5",
-    paddingLeft: "2px",
-  } as CSSStyleDeclaration);
-  controls.appendChild(spectators);
+  // ── Promotion ──────────────────────────────────────────────────────────────
 
-  // ── Promotion picker ───────────────────────────────────────────────────────
-
-  const promotion = document.createElement("div");
-  Object.assign(promotion.style, {
-    display: "none",
-    margin: "9px 0 0",
-    paddingTop: "8px",
-    borderTop: "1px solid #26313d",
-  } as CSSStyleDeclaration);
-
-  const promotionLabel = document.createElement("div");
-  promotionLabel.textContent = "Promote to";
-  Object.assign(promotionLabel.style, {
-    fontSize: "11px",
-    color: "#8fa2b5",
-    marginBottom: "6px",
-  } as CSSStyleDeclaration);
-
-  const promotionRow = document.createElement("div");
-  Object.assign(promotionRow.style, { display: "flex", gap: "6px" } as CSSStyleDeclaration);
-  promotion.append(promotionLabel, promotionRow);
+  const promotion = el("div", "mgchess-promo");
+  const promotionRow = el("div", "mgchess-promo-row");
+  promotion.append(el("div", "mgchess-promo-label", "Promote to"), promotionRow);
 
   let resolvePromotion: ((kind: ChessPieceKind | null) => void) | null = null;
 
   function settlePromotion(kind: ChessPieceKind | null): void {
-    promotion.style.display = "none";
+    promotion.classList.remove("is-shown");
     const resolve = resolvePromotion;
     resolvePromotion = null;
     resolve?.(kind);
   }
 
   for (const choice of PROMOTION_CHOICES) {
-    const el = button(choice.glyph, () => settlePromotion(choice.kind));
-    el.title = choice.label;
-    el.style.fontSize = "18px";
-    el.style.padding = "2px 0";
-    promotionRow.appendChild(el);
+    const node = el("button", "mgchess-promo-btn", choice.glyph);
+    node.type = "button";
+    node.title = choice.label;
+    node.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      settlePromotion(choice.kind);
+    });
+    promotionRow.appendChild(node);
   }
 
-  panel.append(clocks, banner, status, controls, promotion);
+  panel.append(header, sides, banner, status, controls, promotion);
 
   // ── Clock painting ─────────────────────────────────────────────────────────
 
   const unsubscribeClock = onChessClockTick((reading) => {
-    whiteRow.time.textContent = formatClock(reading.whiteMs);
-    blackRow.time.textContent = formatClock(reading.blackMs);
+    whiteSide.time.textContent = formatClock(reading.whiteMs);
+    blackSide.time.textContent = formatClock(reading.blackMs);
 
-    for (const [side, row] of [
-      ["white", whiteRow] as const,
-      ["black", blackRow] as const,
+    for (const [side, entry] of [
+      ["white", whiteSide] as const,
+      ["black", blackSide] as const,
     ]) {
       const active = reading.turn === side;
       const ms = side === "white" ? reading.whiteMs : reading.blackMs;
-      row.block.style.background = active ? "#1b2735" : "transparent";
-      row.time.style.color = active && ms < CLOCK_URGENT_MS ? "#ff6b6b" : "#d8e2ec";
+      entry.block.classList.toggle("is-active", active);
+      entry.time.classList.toggle("is-urgent", ms < CLOCK_URGENT_MS);
     }
   });
+
+  // ── Captures ───────────────────────────────────────────────────────────────
+
+  function paintCaptures(strip: HTMLElement, taken: ChessPieceKind[], edge: number): void {
+    strip.replaceChildren();
+
+    if (!taken.length && edge <= 0) {
+      strip.classList.remove("is-shown");
+      return;
+    }
+    strip.classList.add("is-shown");
+
+    const counts = new Map<ChessPieceKind, number>();
+    for (const kind of taken) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+
+    for (const kind of CAPTURE_ORDER) {
+      for (let i = 0; i < (counts.get(kind) ?? 0); i++) {
+        const slot = el("span", "mgchess-cap");
+        strip.appendChild(slot);
+        attachSpriteIcon(slot, ["decor"], DEFAULT_PIECE_DECOR_IDS[kind], CAPTURE_ICON_PX, "chessHud");
+      }
+    }
+
+    // Only the leader shows a number: two of them would be the same fact
+    // written twice, with a minus sign.
+    if (edge > 0) strip.appendChild(el("span", "mgchess-edge", `+${edge}`));
+  }
 
   // ── Drag ───────────────────────────────────────────────────────────────────
 
   const applyPosition = (left: number, top: number): Position => {
-    const height = panel.offsetHeight || 120;
+    const height = panel.offsetHeight || 130;
     const boundedLeft = clampCoord(left, SCREEN_MARGIN, window.innerWidth - PANEL_WIDTH - SCREEN_MARGIN);
     const boundedTop = clampCoord(top, SCREEN_MARGIN, window.innerHeight - height - SCREEN_MARGIN);
     panel.style.left = `${Math.round(boundedLeft)}px`;
@@ -413,7 +370,6 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
       });
     }
     dragState = null;
-    panel.style.cursor = "grab";
   };
 
   const onPointerDown = (ev: PointerEvent) => {
@@ -440,7 +396,6 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
     document.addEventListener("pointermove", onDragMove);
     document.addEventListener("pointerup", stopDrag);
     document.addEventListener("pointercancel", stopDrag);
-    panel.style.cursor = "grabbing";
     ev.preventDefault();
     ev.stopPropagation();
   };
@@ -462,58 +417,6 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
 
   let destroyed = false;
 
-  /**
-   * Draws one side's captured pieces. The sprites are the board's own decor
-   * sprites, fetched through the shared sprite cache — a taken knight has to
-   * look like the knight it was standing on the board.
-   */
-  function paintCaptures(
-    strip: HTMLElement,
-    taken: ChessPieceKind[],
-    advantage: number,
-  ): void {
-    strip.replaceChildren();
-
-    if (!taken.length && advantage <= 0) {
-      strip.style.display = "none";
-      return;
-    }
-    strip.style.display = "flex";
-
-    const counts = new Map<ChessPieceKind, number>();
-    for (const kind of taken) counts.set(kind, (counts.get(kind) ?? 0) + 1);
-
-    for (const kind of CAPTURE_ORDER) {
-      const count = counts.get(kind) ?? 0;
-      for (let i = 0; i < count; i++) {
-        const slot = document.createElement("span");
-        Object.assign(slot.style, {
-          width: `${CAPTURE_ICON_PX}px`,
-          height: `${CAPTURE_ICON_PX}px`,
-          display: "inline-block",
-          // Pawns overlap slightly, the way a captured pile stacks.
-          marginRight: i > 0 ? "-4px" : "0",
-        } as CSSStyleDeclaration);
-        strip.appendChild(slot);
-        attachSpriteIcon(slot, ["decor"], DEFAULT_PIECE_DECOR_IDS[kind], CAPTURE_ICON_PX, "chessHud");
-      }
-    }
-
-    // Only the leader shows a number: two of them would just be the same fact
-    // written twice, with a minus sign.
-    if (advantage > 0) {
-      const score = document.createElement("span");
-      score.textContent = `+${advantage}`;
-      Object.assign(score.style, {
-        fontSize: "11px",
-        color: "#8fa2b5",
-        marginLeft: "6px",
-        fontVariantNumeric: "tabular-nums",
-      } as CSSStyleDeclaration);
-      strip.appendChild(score);
-    }
-  }
-
   return {
     setCaptures(captures) {
       const material = (list: ChessPieceKind[]) =>
@@ -522,49 +425,43 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
       const whiteMaterial = material(captures.white ?? []);
       const blackMaterial = material(captures.black ?? []);
 
-      paintCaptures(whiteRow.strip, captures.white ?? [], whiteMaterial - blackMaterial);
-      paintCaptures(blackRow.strip, captures.black ?? [], blackMaterial - whiteMaterial);
+      paintCaptures(whiteSide.caps, captures.white ?? [], whiteMaterial - blackMaterial);
+      paintCaptures(blackSide.caps, captures.black ?? [], blackMaterial - whiteMaterial);
     },
 
     setDrawOffer(from) {
       banner.replaceChildren();
+      banner.classList.remove("is-result");
 
       if (!from) {
-        banner.style.display = "none";
+        banner.classList.remove("is-shown");
         return;
       }
 
       if (from === "me") {
         banner.textContent = "You offered a draw. Waiting for a reply.";
-        banner.style.display = "block";
+        banner.classList.add("is-shown");
         return;
       }
 
-      const text = document.createElement("div");
-      text.textContent = "Your opponent offers a draw";
-      text.style.marginBottom = "6px";
-
-      const row = document.createElement("div");
-      Object.assign(row.style, { display: "flex", gap: "6px" } as CSSStyleDeclaration);
+      const row = el("div", "mgchess-promo-row");
       row.append(
-        button("Accept", () => options.onAcceptDraw?.()),
+        button("Accept", () => options.onAcceptDraw?.(), "is-primary"),
         button("Decline", () => options.onDeclineDraw?.()),
       );
 
-      banner.append(text, row);
-      banner.style.display = "block";
+      banner.append(el("div", "mgchess-banner-text", "Your opponent offers a draw"), row);
+      banner.classList.add("is-shown");
     },
 
     setResult(text) {
       disarmResign();
       banner.replaceChildren();
       banner.textContent = text;
-      banner.style.display = "block";
-      banner.style.fontWeight = "600";
+      banner.classList.add("is-shown", "is-result");
 
       // The game is over: swap the game controls for a way out.
-      controls.replaceChildren();
-      controls.append(leaveButton, spectators);
+      controls.replaceChildren(leaveButton);
       leaveButton.textContent = "Close";
 
       settlePromotion(null);
@@ -572,24 +469,30 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
 
     async askPromotion() {
       settlePromotion(null);
-      promotion.style.display = "block";
+      promotion.classList.add("is-shown");
       return new Promise<ChessPieceKind | null>((resolve) => {
         resolvePromotion = resolve;
       });
     },
 
+    setHidden(hidden) {
+      if (hideButton) hideButton.textContent = hidden ? "Show" : "Hide";
+      status.textContent = hidden ? "Board put away, your garden is back." : "";
+      status.classList.toggle("is-shown", hidden);
+    },
+
     setSpectators(count) {
       if (count == null) {
-        spectators.style.display = "none";
+        watchers.style.display = "none";
         return;
       }
-      spectators.textContent = `👁 ${count}`;
-      spectators.style.display = "inline";
+      watchers.textContent = `👁 ${count}`;
+      watchers.style.display = "inline";
     },
 
     setStatusText(text) {
       status.textContent = text ?? "";
-      status.style.display = text ? "block" : "none";
+      status.classList.toggle("is-shown", !!text);
     },
 
     destroy() {

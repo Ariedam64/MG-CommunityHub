@@ -62,6 +62,31 @@ export function removeCachedChessChallenge(challengeId: number): void {
   notify();
 }
 
+/**
+ * Retire tout défi en attente avec ces joueurs, quel que soit le sens.
+ *
+ * Un défi accepté ne produit aucun événement de défi : le serveur émet
+ * `chess_match_started`. Sans ce nettoyage, la fiche du joueur continue à
+ * décompter « défi envoyé » pendant qu'on joue déjà contre lui.
+ */
+export function removeCachedChessChallengesWith(playerIds: string[]): void {
+  const ids = playerIds.filter(Boolean);
+  if (!ids.length) return;
+
+  const touches = (challenge: ChessChallenge) =>
+    ids.includes(challenge.from.playerId) || ids.includes(challenge.to.playerId);
+
+  const incoming = _challenges.incoming.filter((c) => !touches(c));
+  const outgoing = _challenges.outgoing.filter((c) => !touches(c));
+
+  if (incoming.length === _challenges.incoming.length && outgoing.length === _challenges.outgoing.length) {
+    return;
+  }
+
+  _challenges = { incoming, outgoing };
+  notify();
+}
+
 /** Le défi en attente avec ce joueur, dans un sens ou dans l'autre. */
 export function findChessChallengeWith(
   playerId: string,

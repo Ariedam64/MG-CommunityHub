@@ -10,6 +10,7 @@ import {
   addCachedChessChallenge,
   invalidateFriendChessMatches,
   removeCachedChessChallenge,
+  removeCachedChessChallengesWith,
   setCachedChessChallenges,
 } from "@/api/cache/chess";
 import { onWelcome } from "@/api/cache/welcome";
@@ -17,6 +18,13 @@ import { getCurrentPlayerId } from "@/api/init";
 import { openChessStream } from "@/api/streams/chess";
 import type { StreamHandle } from "@/api/types";
 import { showIncomingChallenge, dismissIncomingChallenge } from "@/ui/hub/chessChallengeUi";
+import {
+  addRoomBoardForMatch,
+  applyRoomBoardMove,
+  dropRoomBoard,
+  startRoomBoards,
+  stopRoomBoards,
+} from "./chessRoomBoards";
 import {
   bindChessSessionLifecycle,
   handleChessDrawDeclined,
@@ -35,6 +43,7 @@ export function startChessFeature(playerId: string): void {
   if (handle) return;
 
   bindChessSessionLifecycle();
+  startRoomBoards();
 
   handle = openChessStream(playerId, {
     onChallenge: (challenge) => {
@@ -55,13 +64,33 @@ export function startChessFeature(playerId: string): void {
     },
 
     onMatchStarted: (match) => {
-      // The challenge that produced it is settled either way.
+      // An accepted challenge produces no challenge event, only this one - so
+      // this is where the pending offer stops being pending. Without it the
+      // player card keeps counting down "challenge sent" during the game.
+      removeCachedChessChallengesWith([match.white.playerId, match.black.playerId]);
       invalidateFriendChessMatches();
       handleChessMatchStarted(match);
+      // Broadcast to the whole room, so this also fires for the neighbours'
+      // games: a board goes up on their garden the moment they start.
+      addRoomBoardForMatch(match);
     },
 
-    onMove: handleChessMoveEvent,
-    onMatchEnded: handleChessMatchEnded,
+    onMove: (payload) => {
+      handleChessMoveEvent(payload);
+      // The same event carries the neighbours' games, broadcast to the room.
+      applyRoomBoardMove(
+        payload.matchId,
+        payload.ply,
+        payload.from,
+        payload.to,
+        payload.promotion,
+      );
+    },
+
+    onMatchEnded: (payload) => {
+      handleChessMatchEnded(payload);
+      dropRoomBoard(payload.matchId);
+    },
     onDrawOffer: (payload) => handleChessDrawOffer(payload.matchId, payload.by),
     onDrawDeclined: (payload) => handleChessDrawDeclined(payload.matchId),
   });
@@ -75,6 +104,7 @@ export function startChessFeature(playerId: string): void {
 }
 
 export function stopChessFeature(): void {
+  stopRoomBoards();
   handle?.close();
   handle = null;
   unsubscribeWelcome?.();

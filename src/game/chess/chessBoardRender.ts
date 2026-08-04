@@ -3,15 +3,14 @@
 // Draws a chess position onto the garden: the pieces as decor tile objects, and
 // four PIXI.Graphics overlays - the squares, the last move, the move hints and
 // the refusal blink. It holds no rules; it is handed a position and mirrors it.
-// Piece tinting is its own module, chessBoardTint.ts.
+// Piece tinting is its own module, chessBoardTint.ts, and the right-click
+// annotations another, chessBoardMarks.ts.
 //
-// The overlays live in the tile system's worldContainer, which the game builds
-// with `sortableChildren: true`; zIndex is what orders them there. They all sit
-// below every tile object so the pieces stay on top, stacked in that order, and
-// the terrain is unaffected since it lives in a separate groundContainer.
+// The overlays are created through chessOverlay.ts and ordered by
+// OVERLAY_Z_INDEX, which is where the whole stack is written down.
 
-import { tos } from "@/game/tileObjectSystem";
-import { findGraphicsCtor } from "@/game/pixiGraphics";
+import { createOverlay, removeOverlay, type Overlay } from "./chessOverlay";
+import { createSlideController, type SlideStep } from "./chessSlide";
 import {
   FARM_TILE_SIZE,
   emptyTile,
@@ -19,12 +18,14 @@ import {
   resolveTileRoot,
 } from "./chessBoardTiles";
 import {
+  OVERLAY_Z_INDEX,
   getLayout,
   setLayout,
+  squareCenter,
   squareToTile,
   type RenderConfig,
 } from "./chessBoardLayout";
-import { refreshTints, teardownTints } from "./chessBoardTint";
+import { ACTIVE_BOARD_KEY, clearTintedBoard, refreshTints } from "./chessBoardTint";
 import {
   BOARD_SIZE,
   type ChessGame,
@@ -33,19 +34,11 @@ import {
   type Square,
 } from "./chessRules";
 
-const BOARD_Z_INDEX = -999999;
-const LAST_MOVE_Z_INDEX = BOARD_Z_INDEX + 1;
-const HINT_Z_INDEX = BOARD_Z_INDEX + 2;
-const FLASH_Z_INDEX = BOARD_Z_INDEX + 3;
-
 /** Refusal feedback: the square blinks red a few times, then clears. */
 const ILLEGAL_FLASH_COLOR = 0xef4444;
 const ILLEGAL_FLASH_ALPHA = 0.55;
 const ILLEGAL_FLASH_PULSES = 3;
 const ILLEGAL_FLASH_DURATION_MS = 660;
-
-/** A piece in flight has to clear the pieces it passes over. */
-const SLIDE_Z_INDEX = 999998;
 
 /**
  * Move hints, drawn as marks rather than filled squares: a dot in the middle of
@@ -71,60 +64,15 @@ const HINT_ORIGIN_ALPHA = 0.3;
 const LAST_MOVE_COLOR = 0x4ade80;
 const LAST_MOVE_ALPHA = 0.3;
 
-/** Slide of a piece moved by clicking. Short enough not to delay the next move. */
-const SLIDE_DURATION_MS = 200;
-
-type Overlay = { gfx: any; parent: any };
-
-type SlidePart = {
-  root: any;
-  baseX: number;
-  baseY: number;
-  baseZIndex: number;
-  deltaX: number;
-  deltaY: number;
-};
-
-type SlideState = {
-  raf: number;
-  parts: SlidePart[];
-  onDone: () => void;
-};
-
 let boardOverlay: Overlay | null = null;
 let hintOverlay: Overlay | null = null;
 let lastMoveOverlay: Overlay | null = null;
 let flashOverlay: Overlay | null = null;
-let slide: SlideState | null = null;
 let flashRaf: number | null = null;
 
 /* -------------------------------------------------------------------------- */
 /* Overlays                                                                   */
 /* -------------------------------------------------------------------------- */
-
-function getWorldContainer(): any {
-  return (tos.getStatus().tos as any)?.worldContainer ?? null;
-}
-
-function resolveGraphicsCtor(): any {
-  const stage = (tos.getStatus().engine as any)?.app?.stage;
-  return findGraphicsCtor(stage);
-}
-
-function removeOverlay(overlay: Overlay | null): null {
-  if (!overlay) return null;
-  try {
-    overlay.parent?.removeChild?.(overlay.gfx);
-  } catch {
-    /* ignore */
-  }
-  try {
-    overlay.gfx?.destroy?.();
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
 
 /** Fills one board square on `gfx`, in world coordinates. */
 function fillSquare(
@@ -141,20 +89,21 @@ function fillSquare(
 
 /** Paints the 64 squares. Returns false when Pixi isn't reachable. */
 export function paintBoard(next: RenderConfig): boolean {
-  const worldContainer = getWorldContainer();
-  const Graphics = resolveGraphicsCtor();
-  if (!worldContainer?.addChild || !Graphics) return false;
-
-  setLayout(next);
   boardOverlay = removeOverlay(boardOverlay);
 
-  const gfx = new Graphics();
+  const overlay = createOverlay(OVERLAY_Z_INDEX.board);
+  if (!overlay) return false;
+
+  // Only once the layer exists: fillSquare projects through the layout, so
+  // storing a config we then failed to draw would leave the board half set up.
+  setLayout(next);
+
   for (let row = 0; row < BOARD_SIZE; row++) {
     for (let col = 0; col < BOARD_SIZE; col++) {
       // Rows grow downwards, so the bottom-left square lands dark, like a1.
       const isDark = (col + row) % 2 === 1;
       fillSquare(
-        gfx,
+        overlay.gfx,
         { col, row },
         isDark ? next.darkColor : next.lightColor,
         next.alpha,
@@ -162,19 +111,8 @@ export function paintBoard(next: RenderConfig): boolean {
     }
   }
 
-  gfx.zIndex = BOARD_Z_INDEX;
-  worldContainer.addChild(gfx);
-  boardOverlay = { gfx, parent: worldContainer };
+  boardOverlay = overlay;
   return true;
-}
-
-/** Centre of a board square, in world coordinates. */
-function squareCenter(square: Square): { x: number; y: number } {
-  const { tx, ty } = squareToTile(square);
-  return {
-    x: (tx + 0.5) * FARM_TILE_SIZE,
-    y: (ty + 0.5) * FARM_TILE_SIZE,
-  };
 }
 
 /** A quiet move: a dot in the middle of the empty square. */
@@ -203,13 +141,13 @@ function drawCaptureRing(gfx: any, square: Square): void {
 
 /** Marks where the held piece may go, plus the square it came from. */
 export function showMoveHints(from: Square, moves: ChessMove[]): void {
-  const worldContainer = getWorldContainer();
-  const Graphics = resolveGraphicsCtor();
-  if (!worldContainer?.addChild || !Graphics || !getLayout()) return;
-
   hintOverlay = removeOverlay(hintOverlay);
+  if (!getLayout()) return;
 
-  const gfx = new Graphics();
+  const overlay = createOverlay(OVERLAY_Z_INDEX.hint);
+  if (!overlay) return;
+
+  const gfx = overlay.gfx;
   fillSquare(gfx, from, HINT_ORIGIN_COLOR, HINT_ORIGIN_ALPHA);
 
   // Promotion yields four moves onto the same square; one mark is enough.
@@ -223,9 +161,7 @@ export function showMoveHints(from: Square, moves: ChessMove[]): void {
     else drawMoveDot(gfx, move.to);
   }
 
-  gfx.zIndex = HINT_Z_INDEX;
-  worldContainer.addChild(gfx);
-  hintOverlay = { gfx, parent: worldContainer };
+  hintOverlay = overlay;
 }
 
 export function clearMoveHints(): void {
@@ -243,17 +179,15 @@ function stopIllegalFlash(): void {
 /** Blinks a square red, to show why a move was refused. */
 export function flashIllegalSquare(square: Square): void {
   stopIllegalFlash();
+  if (!getLayout()) return;
 
-  const worldContainer = getWorldContainer();
-  const Graphics = resolveGraphicsCtor();
-  if (!worldContainer?.addChild || !Graphics || !getLayout()) return;
+  const overlay = createOverlay(OVERLAY_Z_INDEX.flash);
+  if (!overlay) return;
 
-  const gfx = new Graphics();
+  const gfx = overlay.gfx;
   fillSquare(gfx, square, ILLEGAL_FLASH_COLOR, ILLEGAL_FLASH_ALPHA);
-  gfx.zIndex = FLASH_Z_INDEX;
   gfx.alpha = 0;
-  worldContainer.addChild(gfx);
-  flashOverlay = { gfx, parent: worldContainer };
+  flashOverlay = overlay;
 
   const startedAt = performance.now();
 
@@ -283,127 +217,33 @@ export function flashIllegalSquare(square: Square): void {
 
 /** Tints the two squares the last move joined, so it stays readable afterwards. */
 export function showLastMove(from: Square, to: Square): void {
-  const worldContainer = getWorldContainer();
-  const Graphics = resolveGraphicsCtor();
-  if (!worldContainer?.addChild || !Graphics || !getLayout()) return;
-
   lastMoveOverlay = removeOverlay(lastMoveOverlay);
+  if (!getLayout()) return;
 
-  const gfx = new Graphics();
-  fillSquare(gfx, from, LAST_MOVE_COLOR, LAST_MOVE_ALPHA);
-  fillSquare(gfx, to, LAST_MOVE_COLOR, LAST_MOVE_ALPHA);
+  const overlay = createOverlay(OVERLAY_Z_INDEX.lastMove);
+  if (!overlay) return;
 
-  gfx.zIndex = LAST_MOVE_Z_INDEX;
-  worldContainer.addChild(gfx);
-  lastMoveOverlay = { gfx, parent: worldContainer };
+  fillSquare(overlay.gfx, from, LAST_MOVE_COLOR, LAST_MOVE_ALPHA);
+  fillSquare(overlay.gfx, to, LAST_MOVE_COLOR, LAST_MOVE_ALPHA);
+
+  lastMoveOverlay = overlay;
 }
 
 /* -------------------------------------------------------------------------- */
 /* Move animation                                                             */
 /* -------------------------------------------------------------------------- */
 
-function easeOutCubic(t: number): number {
-  return 1 - (1 - t) ** 3;
-}
-
 /** One square-to-square trip. A castle needs two: the king and its rook. */
-export type SlideStep = { from: Square; to: Square };
-
-/** Puts every sliding tile view back, without running the callback. */
-function abortSlide(): void {
-  if (!slide) return;
-  const current = slide;
-  slide = null;
-
-  cancelAnimationFrame(current.raf);
-  for (const part of current.parts) {
-    try {
-      part.root.position?.set?.(part.baseX, part.baseY);
-      part.root.zIndex = part.baseZIndex;
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-/** Ends the slide where it was headed and commits the move it was showing. */
-function finishSlide(): void {
-  const current = slide;
-  abortSlide();
-  current?.onDone();
-}
-
-/** Captures a trip's starting state, or null when its tile view is unreachable. */
-function prepareSlidePart(step: SlideStep): SlidePart | null {
-  const fromTile = squareToTile(step.from);
-  const toTile = squareToTile(step.to);
-
-  const root = resolveTileRoot(fromTile.tx, fromTile.ty);
-  if (!root?.position) return null;
-
-  return {
-    root,
-    baseX: root.position.x,
-    baseY: root.position.y,
-    baseZIndex: root.zIndex ?? 0,
-    deltaX: (toTile.tx - fromTile.tx) * FARM_TILE_SIZE,
-    deltaY: (toTile.ty - fromTile.ty) * FARM_TILE_SIZE,
-  };
-}
+export type { SlideStep } from "./chessSlide";
 
 /**
- * Slides one or more pieces to their destinations, then runs `onDone` - which
- * is what actually commits the move. The board is untouched until then, so each
- * piece stays visible on its old square for the whole trip.
- *
- * Several steps move together rather than in sequence, which is what a castle
- * looks like: king and rook cross at the same time.
- *
- * A move requested while another is still flying lands that one first, so the
- * position can never be committed out of order.
+ * The playable board's own trip. Delegated so that boards drawn for other
+ * people's games can each have one of their own.
  */
+const slideController = createSlideController(getLayout);
+
 export function animatePieceSlide(steps: SlideStep[], onDone: () => void): void {
-  finishSlide();
-
-  const parts = steps
-    .map(prepareSlidePart)
-    .filter((part): part is SlidePart => part != null);
-
-  if (!parts.length) {
-    onDone();
-    return;
-  }
-
-  const startedAt = performance.now();
-
-  const tick = (now: number): void => {
-    if (!slide) return;
-
-    const progress = Math.min(1, (now - startedAt) / SLIDE_DURATION_MS);
-    const eased = easeOutCubic(progress);
-
-    try {
-      for (const part of parts) {
-        part.root.position.set(
-          part.baseX + part.deltaX * eased,
-          part.baseY + part.deltaY * eased,
-        );
-        part.root.zIndex = SLIDE_Z_INDEX;
-      }
-    } catch {
-      finishSlide();
-      return;
-    }
-
-    if (progress >= 1) {
-      finishSlide();
-      return;
-    }
-    slide.raf = requestAnimationFrame(tick);
-  };
-
-  for (const part of parts) part.root.zIndex = SLIDE_Z_INDEX;
-  slide = { raf: requestAnimationFrame(tick), parts, onDone };
+  slideController.run(steps, onDone);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -417,7 +257,7 @@ export function animatePieceSlide(steps: SlideStep[], onDone: () => void): void 
  * the freshly written position.
  */
 export function settlePendingSlide(): void {
-  finishSlide();
+  slideController.settle();
 }
 
 export function renderSquare(square: Square, piece: ChessPiece | null): void {
@@ -443,9 +283,11 @@ export function renderPosition(game: ChessGame): void {
 
 /** Drops every overlay, the running slide, all tints and the stored config. */
 export function teardownRender(): void {
-  abortSlide();
+  slideController.abort();
   stopIllegalFlash();
-  teardownTints();
+  // Only ours: boards being watched elsewhere in the room keep their tint, and
+  // keep needing it re-asserted every frame.
+  clearTintedBoard(ACTIVE_BOARD_KEY);
 
   boardOverlay = removeOverlay(boardOverlay);
   hintOverlay = removeOverlay(hintOverlay);

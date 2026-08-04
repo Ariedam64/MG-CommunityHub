@@ -664,6 +664,11 @@ export interface ChessMatch {
   ply: number;
   drawOfferedBy: string | null;
   drawOfferedPly: number | null;
+  /**
+   * How many people are watching. Absent until the server keeps a spectator
+   * registry, and the HUD hides its counter rather than showing a made-up zero.
+   */
+  watchers?: number;
   clock: ChessClock;
   /** Omitted on the list endpoint, present on GET /chess/matches/:id. */
   moves?: ChessMoveRecord[];

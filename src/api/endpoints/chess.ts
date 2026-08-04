@@ -64,7 +64,7 @@ export async function cancelChessChallenge(challengeId: number): Promise<boolean
 
 // ── Parties ──────────────────────────────────────────────────────────────────
 
-export type ChessMatchScope = "me" | "friends";
+export type ChessMatchScope = "me" | "friends" | "room";
 export type ChessMatchStatusFilter = "active" | "finished" | "all";
 
 export async function fetchChessMatches(options: {
@@ -154,6 +154,21 @@ export async function postChessDraw(
     return { ok: true, match: (res.data as ChessMatch) ?? null };
   }
   return { ok: false, status: res.status, error: readError(res.data, "draw_failed") };
+}
+
+/**
+ * Registers as a spectator, and renews that registration: the server expires an
+ * entry after 60s, so this doubles as the ping. A 409 means the game is over and
+ * nothing more will be sent, which is not an error worth surfacing.
+ */
+export async function postChessWatch(matchId: number): Promise<boolean> {
+  const res = await httpPost<null>(`chess/matches/${matchId}/watch`, {});
+  return res.status === 204 || res.status === 200;
+}
+
+export async function deleteChessWatch(matchId: number): Promise<boolean> {
+  const res = await httpDelete<null>(`chess/matches/${matchId}/watch`);
+  return res.status === 204 || res.status === 200;
 }
 
 /**

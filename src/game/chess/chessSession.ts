@@ -16,8 +16,10 @@ import {
   claimChessTimeout,
   fetchChessMatch,
   fetchChessMovesSince,
+  deleteChessWatch,
   postChessDraw,
   postChessMove,
+  postChessWatch,
   resignChessMatch,
   sendChessChallenge,
 } from "@/api/endpoints/chess";
@@ -28,6 +30,9 @@ import { toastSimple } from "@/ui/toast";
 import { createChessHud, type ChessHudController } from "@/ui/hub/chessHud";
 import { CH_EVENTS } from "@/ui/hub/shared";
 import { tos } from "@/game/tileObjectSystem";
+import { readSharedGlobal, shareGlobal } from "@/platform/page-context";
+import { findUserSlotIdx } from "./chessBoardTiles";
+import { setExcludedRoomMatches } from "./chessRoomBoards";
 import type {
   ChessChallenge,
   ChessColor,
@@ -61,6 +66,12 @@ const ARM_RETRY_MS = 500;
 const TIMEOUT_CLAIM_GRACE_MS = 2000;
 
 /**
+ * How often we tell the server we are still watching. Its registry expires an
+ * entry after 60s, so half that leaves room for one lost request.
+ */
+const WATCH_PING_MS = 30_000;
+
+/**
  * Spectator polling. Spectators get no events by design, so they ask. Slower
  * under Discord, where every HTTP request pauses the long-poll that carries
  * this player's own messages.
@@ -82,10 +93,31 @@ type Session = {
   armTimer: ReturnType<typeof setTimeout> | null;
   pollTimer: ReturnType<typeof setInterval> | null;
   timeoutTimer: ReturnType<typeof setTimeout> | null;
+  /** Keeps our spectator registration alive while we watch. */
+  watchTimer: ReturnType<typeof setInterval> | null;
   /** Suppresses the clock/flag logic once the game is over. */
   finished: boolean;
   /** Set while a resync is in flight, so moves are not applied on a stale board. */
   resyncing: boolean;
+  /**
+   * Garden slot the board is drawn on, or null for our own. Set when watching a
+   * game one of whose players is here in the room: the board then shows up on
+   * their plot, where it is actually being played, and our garden is left alone.
+   */
+  hostSlotIdx: number | null;
+  /** Name of the player whose garden we are watching on, when there is one. */
+  hostName: string | null;
+  /**
+   * Board put away at the player's request. The game, the clock and the events
+   * all carry on; only the drawing is gone, so they can tend their garden while
+   * the opponent thinks.
+   */
+  hidden: boolean;
+  /**
+   * Which way up to draw it, when the player has asked for something other than
+   * the default (their own side at the bottom, White's view when watching).
+   */
+  flipOverride: boolean | null;
 };
 
 let session: Session | null = null;
@@ -181,16 +213,21 @@ function resultText(match: ChessMatch, myColor: ChessColor | null): string {
 
 // ── Mounting ─────────────────────────────────────────────────────────────────
 
+/**
+ * Shared through the page window rather than ours: the whole point of the flag
+ * is that another mod can see it, and another mod lives in the page. Set on our
+ * own window it guards nothing.
+ */
 function claimBoardOwnership(): boolean {
-  const held = (window as any)[BOARD_OWNER_FLAG];
+  const held = readSharedGlobal<string>(BOARD_OWNER_FLAG);
   if (held && held !== "mg-community-hub") return false;
-  (window as any)[BOARD_OWNER_FLAG] = "mg-community-hub";
+  shareGlobal(BOARD_OWNER_FLAG, "mg-community-hub");
   return true;
 }
 
 function releaseBoardOwnership(): void {
-  if ((window as any)[BOARD_OWNER_FLAG] === "mg-community-hub") {
-    delete (window as any)[BOARD_OWNER_FLAG];
+  if (readSharedGlobal<string>(BOARD_OWNER_FLAG) === "mg-community-hub") {
+    shareGlobal(BOARD_OWNER_FLAG, undefined);
   }
 }
 
@@ -199,7 +236,11 @@ function releaseBoardOwnership(): void {
  * cannot be drawn yet: the clock is already running on the server, and a player
  * staring at nothing while their time burns is the one outcome to avoid.
  */
-function beginSession(match: ChessMatch, role: "player" | "spectator"): void {
+function beginSession(
+  match: ChessMatch,
+  role: "player" | "spectator",
+  host: { slotIdx: number; name: string | null } | null = null,
+): void {
   if (session) return;
 
   if (!claimBoardOwnership()) {
@@ -218,8 +259,13 @@ function beginSession(match: ChessMatch, role: "player" | "spectator"): void {
     armTimer: null,
     pollTimer: null,
     timeoutTimer: null,
+    watchTimer: null,
     finished: match.status === "finished",
     resyncing: false,
+    hostSlotIdx: host?.slotIdx ?? null,
+    hostName: host?.name ?? null,
+    hidden: false,
+    flipOverride: null,
   };
 
   syncChessClock(match.clock, match.status === "active");
@@ -229,6 +275,8 @@ function beginSession(match: ChessMatch, role: "player" | "spectator"): void {
     black: match.black.name ?? "Black",
     myColor,
     onResign: () => void doResign(),
+    onToggleHidden: () => void toggleBoardHidden(),
+    onFlip: () => void flipBoardView(),
     onOfferDraw: () => void doDraw("offer"),
     onAcceptDraw: () => void doDraw("accept"),
     onDeclineDraw: () => void doDraw("decline"),
@@ -240,13 +288,34 @@ function beginSession(match: ChessMatch, role: "player" | "spectator"): void {
     session.hud.setDrawOffer(match.drawOfferedBy === me ? "me" : "them");
   }
 
+  session.hud.setSpectators(match.watchers ?? null);
+
+  // Our own board covers this match; the room boards must not draw it twice.
+  setExcludedRoomMatches([match.id]);
+
+  // Watching is a registration, not just a read: without it the server has no
+  // reason to send us this game's moves when it is being played elsewhere.
+  if (role === "spectator") startWatchPing(match.id);
+
   notify();
   void armBoard();
+}
+
+function startWatchPing(matchId: number): void {
+  if (!session || session.watchTimer) return;
+
+  void postChessWatch(matchId);
+  session.watchTimer = setInterval(() => {
+    if (session?.match.id === matchId && !session.finished) void postChessWatch(matchId);
+  }, WATCH_PING_MS);
 }
 
 /** Retries painting until the tile system and the garden are both available. */
 async function armBoard(): Promise<void> {
   if (!session || session.state !== "arming") return;
+
+  // Put away at the player's request: the game runs on, nothing is drawn.
+  if (session.hidden) return;
 
   if (!tos.isReady()) {
     session.hud?.setStatusText("Waiting for your garden to load...");
@@ -261,6 +330,8 @@ async function armBoard(): Promise<void> {
   }
 
   const result = await paintChessBoard({
+    userSlotIdx: session.hostSlotIdx ?? undefined,
+    flipped: session.flipOverride ?? undefined,
     startFromMoves: boardMoves,
     enableInput: session.role === "player",
     net:
@@ -287,7 +358,12 @@ async function armBoard(): Promise<void> {
   }
 
   session.state = session.role === "player" ? "playing" : "spectating";
-  session.hud?.setStatusText(null);
+
+  // Watching on someone else's plot leaves our own garden looking untouched,
+  // which is confusing without a word about where to look.
+  session.hud?.setStatusText(
+    session.hostName ? `Playing out in ${session.hostName}'s garden` : null,
+  );
   paintCaptures();
 
   // The panel covers the garden, and the garden is now the board. The floating
@@ -306,6 +382,57 @@ async function armBoard(): Promise<void> {
   notify();
 }
 
+// ── Putting the board away, and turning it round ─────────────────────────────
+
+/**
+ * Rebuilds the drawing without touching the game. The move list is refetched
+ * first: ours has been advancing through events, and the board is rebuilt from
+ * scratch, so it has to be the server's.
+ */
+async function remountBoard(): Promise<void> {
+  if (!session) return;
+
+  const matchId = session.match.id;
+  const full = await fetchChessMatch(matchId);
+  if (!session || session.match.id !== matchId) return;
+
+  if (full) session.match = { ...session.match, ...full };
+
+  session.state = "arming";
+  await armBoard();
+}
+
+/** Puts the board away so the garden can be used, or brings it back. */
+async function toggleBoardHidden(): Promise<void> {
+  if (!session || session.role !== "player") return;
+
+  session.hidden = !session.hidden;
+  session.hud?.setHidden(session.hidden);
+
+  if (session.hidden) {
+    // Everything the board wrote goes back, inputs included - which is the
+    // point: the player has to be able to click their own tiles again.
+    clearChessBoard();
+    session.state = "playing";
+    notify();
+    return;
+  }
+
+  await remountBoard();
+  paintCaptures();
+}
+
+/** Looks at the board from the other side. */
+async function flipBoardView(): Promise<void> {
+  if (!session || session.hidden) return;
+
+  const current = session.flipOverride ?? session.myColor === "black";
+  session.flipOverride = !current;
+
+  await remountBoard();
+  paintCaptures();
+}
+
 // ── Leaving ──────────────────────────────────────────────────────────────────
 
 /** Tears the board down and restores the garden. Safe to call repeatedly. */
@@ -315,12 +442,21 @@ export function leaveChessSession(): void {
   if (session.armTimer) clearTimeout(session.armTimer);
   if (session.pollTimer) clearInterval(session.pollTimer);
   if (session.timeoutTimer) clearTimeout(session.timeoutTimer);
+
+  if (session.watchTimer) {
+    clearInterval(session.watchTimer);
+    // Told rather than left to expire, so the counter drops as we leave instead
+    // of a minute later.
+    void deleteChessWatch(session.match.id);
+  }
+
   session.hud?.destroy();
   session = null;
 
   clearChessBoard();
   resetChessClock();
   releaseBoardOwnership();
+  setExcludedRoomMatches([]);
   notify();
 }
 
@@ -388,8 +524,31 @@ export async function watchChessMatch(matchId: number): Promise<boolean> {
     return false;
   }
 
-  beginSession(match, "spectator");
+  beginSession(match, "spectator", await findHost(match));
   return true;
+}
+
+/**
+ * The garden to watch the game on: the plot of whichever player is here in the
+ * room, so the board appears where it is being played and our own garden is
+ * left alone. White is preferred when both are here, so every onlooker in the
+ * room is looking at the same plot.
+ *
+ * Null when neither is here, and the board falls back to our own garden — the
+ * two players need not even be in the same room as each other.
+ */
+async function findHost(
+  match: ChessMatch,
+): Promise<{ slotIdx: number; name: string | null } | null> {
+  const me = getCurrentPlayerId();
+
+  for (const player of [match.white, match.black]) {
+    if (!player.playerId || player.playerId === me) continue;
+    const slotIdx = await findUserSlotIdx(player.playerId);
+    if (slotIdx != null) return { slotIdx, name: player.name ?? null };
+  }
+
+  return null;
 }
 
 async function doResign(): Promise<void> {
@@ -473,6 +632,13 @@ export function handleChessMoveEvent(event: ChessMoveEvent): void {
   session.match = { ...session.match, ply: event.ply, turn: event.turn, drawOfferedBy: null };
   session.hud?.setDrawOffer(null);
 
+  // Nothing on screen to move. Bringing the board back refetches the moves and
+  // rebuilds from them, so missing these is free.
+  if (session.hidden) {
+    scheduleTimeoutClaim();
+    return;
+  }
+
   // Claimed, not played: our own move is echoed back to us and can arrive while
   // its piece is still sliding. Comparing against the committed count would make
   // it look like the opponent's reply and play it twice.
@@ -551,7 +717,7 @@ function applyMatchState(match: ChessMatch, options: { replay?: boolean } = {}):
   session.match = { ...session.match, ...match };
   syncChessClock(match.clock, match.status === "active");
 
-  if (options.replay && match.moves) {
+  if (options.replay && match.moves && !session.hidden) {
     const boardMoves = toBoardMoves(match.moves);
     if (boardMoves) resetPositionFromMoves(boardMoves);
   }
@@ -561,6 +727,10 @@ function applyMatchState(match: ChessMatch, options: { replay?: boolean } = {}):
     match.drawOfferedBy ? (match.drawOfferedBy === me ? "me" : "them") : null,
   );
 
+  // Null while the server keeps no registry, which hides the counter rather
+  // than claiming nobody is watching.
+  session.hud?.setSpectators(match.watchers ?? null);
+
   if (match.status === "finished") finishSession();
   else scheduleTimeoutClaim();
 }
@@ -569,10 +739,21 @@ function finishSession(): void {
   if (!session || session.finished) return;
 
   session.finished = true;
+  // A finished game is worth looking at, so it comes back out if it was away.
+  if (session.hidden) {
+    session.hidden = false;
+    session.hud?.setHidden(false);
+    void remountBoard();
+  }
+
   if (session.pollTimer) clearInterval(session.pollTimer);
   if (session.timeoutTimer) clearTimeout(session.timeoutTimer);
+  if (session.watchTimer) clearInterval(session.watchTimer);
   session.pollTimer = null;
   session.timeoutTimer = null;
+  // The server drops the registry itself when a game ends; pinging on would
+  // just collect 409s.
+  session.watchTimer = null;
 
   stopChessClock();
   setChessBoardFrozen(true);
