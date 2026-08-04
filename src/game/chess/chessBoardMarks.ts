@@ -16,11 +16,19 @@
 // Two layers, because they belong at different depths: the squares sit under
 // the pieces like the rest of the board's tinting, the arrows above them.
 
-import { createOverlay, removeOverlay, type Overlay } from "./chessOverlay";
-import { FARM_TILE_SIZE } from "./chessBoardTiles";
+import { createOverlay, createOverlayIn, removeOverlay, type Overlay } from "./chessOverlay";
+import { FARM_TILE_SIZE, resolveTileRoot } from "./chessBoardTiles";
 import { OVERLAY_Z_INDEX, getLayout, squareCenter, squareToTile } from "./chessBoardLayout";
 import { arrowOutline } from "./chessMarkShapes";
-import type { Square } from "./chessRules";
+import { BOARD_SIZE, type Square } from "./chessRules";
+
+/**
+ * Depth is not a small number here. The game sorts its tiles by position with
+ * values in the tens of millions - a piece on tile (22, 22) reports about
+ * 57.6 million - so an annotation cannot be given a fixed depth and be
+ * expected to stay on top. It is measured against the container instead.
+ */
+const ARROW_Z_INDEX_HEADROOM = 1;
 
 /**
  * Laid over the board rather than covering it, so the checkerboard still shows
@@ -33,7 +41,8 @@ const SQUARE_ALPHA = 0.5;
 
 /** Yellow, so an arrow never reads as one of the red squares it crosses. */
 const ARROW_COLOR = 0xfacc15;
-const ARROW_ALPHA = 0.8;
+/** Now that arrows draw over the pieces, enough to still see the piece under. */
+const ARROW_ALPHA = 0.7;
 
 type Arrow = { from: Square; to: Square };
 
@@ -83,11 +92,53 @@ function drawArrow(gfx: any, arrow: Arrow): void {
   gfx.poly(outline).fill({ color: ARROW_COLOR, alpha: ARROW_ALPHA });
 }
 
+/**
+ * The container the pieces live in, and a depth clear of every one of them.
+ *
+ * zIndex only orders siblings. The pieces are tile views, and they are not
+ * necessarily siblings of the world container the rest of the board draws in,
+ * so an arrow put there can sit at any depth it likes and still come out
+ * underneath them. Asking a piece for its own parent is what makes the arrow
+ * land in the right pile without this module having to know how the game
+ * arranges its layers.
+ *
+ * Returns null when no piece can be found - an empty board, or Pixi not ready
+ * yet - and the caller falls back to the world container.
+ */
+function resolvePieceLayer(): { parent: any; zIndex: number } | null {
+  for (let col = 0; col < BOARD_SIZE; col++) {
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      const { tx, ty } = squareToTile({ col, row });
+      // Never ensureView: building a view for an empty square here would put
+      // tiles on the board as a side effect of drawing an annotation.
+      const parent = resolveTileRoot(tx, ty, false)?.parent;
+      if (!parent?.addChild) continue;
+
+      // Above every sibling rather than a fixed number, because the pieces are
+      // depth-sorted by the game and we do not get to pick their range. No
+      // ceiling: an earlier attempt capped this at 999997 and the pieces sit
+      // around 57 million, so the cap was the whole bug.
+      let top: number = OVERLAY_Z_INDEX.arrow;
+      for (const child of parent.children ?? []) {
+        const z = Number(child?.zIndex);
+        if (Number.isFinite(z) && z > top) top = z;
+      }
+
+      return { parent, zIndex: top + ARROW_Z_INDEX_HEADROOM };
+    }
+  }
+
+  return null;
+}
+
 function drawArrows(): void {
   arrowOverlay = removeOverlay(arrowOverlay);
   if (!markedArrows.size) return;
 
-  const overlay = createOverlay(OVERLAY_Z_INDEX.arrow);
+  const layer = resolvePieceLayer();
+  const overlay = layer
+    ? createOverlayIn(layer.parent, layer.zIndex)
+    : createOverlay(OVERLAY_Z_INDEX.arrow);
   if (!overlay) return;
 
   for (const arrow of markedArrows.values()) drawArrow(overlay.gfx, arrow);

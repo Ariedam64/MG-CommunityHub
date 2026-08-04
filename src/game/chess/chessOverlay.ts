@@ -25,18 +25,36 @@ function resolveGraphicsCtor(): any {
 }
 
 /**
- * A fresh Graphics parented to the world at that depth, or null when Pixi isn't
+ * A fresh Graphics parented to `parent` at that depth, or null when Pixi isn't
  * reachable - which is what every caller checks to know it can't draw yet.
  */
-export function createOverlay(zIndex: number): Overlay | null {
-  const worldContainer = getWorldContainer();
+export function createOverlayIn(parent: any, zIndex: number): Overlay | null {
   const Graphics = resolveGraphicsCtor();
-  if (!worldContainer?.addChild || !Graphics) return null;
+  if (!parent?.addChild || !Graphics) return null;
 
   const gfx = new Graphics();
+
+  // Parent first, set the depth second. Pixi's zIndex setter marks the
+  // *parent* as needing a re-sort, so setting it on an orphan marks nothing:
+  // the container quietly stays on insertion order and the value is ignored.
+  // That is what kept annotations under the pieces - the other layers only
+  // looked correct because the order they happen to be created in matches the
+  // order they belong in, and a piece redrawn after a move is added last.
+  parent.addChild(gfx);
   gfx.zIndex = zIndex;
-  worldContainer.addChild(gfx);
-  return { gfx, parent: worldContainer };
+
+  // Belt and braces: a container that never had sorting turned on ignores
+  // zIndex outright, and the dirty flag is what makes the sort actually run
+  // on the next frame.
+  if (!parent.sortableChildren) parent.sortableChildren = true;
+  parent.sortDirty = true;
+
+  return { gfx, parent };
+}
+
+/** The same, in the world container - where everything under the pieces goes. */
+export function createOverlay(zIndex: number): Overlay | null {
+  return createOverlayIn(getWorldContainer(), zIndex);
 }
 
 /** Detaches and destroys an overlay. Returns null, to empty the slot it held. */
