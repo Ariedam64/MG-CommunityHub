@@ -16,8 +16,10 @@ import { readHubPath, writeHubPath } from "@/storage/storage";
 import { WIDGET_Z_INDEX } from "@/ui/communityHubButtonFloating";
 import { attachSpriteIcon } from "@/ui/spriteIcons";
 import { ensureChessHudStyles } from "./chessHudStyles";
+import { setImageSafe } from "@/platform/discordCsp";
 import { CLOCK_URGENT_MS, formatClock, onChessClockTick } from "@/game/chess/chessClock";
 import { DEFAULT_PIECE_DECOR_IDS } from "@/game/chess/chessBoard";
+import { flatPieceImageUrl } from "@/game/chess/chessPieceSkin";
 import type { ChessColor } from "@/api/types";
 import type { ChessPieceKind } from "@/game/chess/chessRules";
 
@@ -259,6 +261,10 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
         flatPieces = !flatPieces;
         viewButton!.textContent = flatPieces ? "3D" : "2D";
         viewButton!.title = flatPieces ? "Switch to the garden pieces" : "Switch to flat pieces";
+        // The strips are pieces too: leaving them on the old set would make the
+        // panel disagree with the board it belongs to. Repainted here rather
+        // than waiting for the caller, whose remount is a frame or two away.
+        repaintCaptures();
         options.onToggleFlatPieces?.(flatPieces);
       })
     : null;
@@ -321,7 +327,30 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
 
   // ── Captures ───────────────────────────────────────────────────────────────
 
-  function paintCaptures(strip: HTMLElement, taken: ChessPieceKind[], edge: number): void {
+  /** Draws one taken piece in whichever set the board is currently showing. */
+  function fillCaptureSlot(slot: HTMLElement, kind: ChessPieceKind, side: ChessColor): void {
+    if (!flatPieces) {
+      attachSpriteIcon(slot, ["decor"], DEFAULT_PIECE_DECOR_IDS[kind], CAPTURE_ICON_PX, "chessHud");
+      return;
+    }
+
+    const image = el("img", `mgchess-cap-img is-${side}`);
+    image.alt = "";
+    image.draggable = false;
+    setImageSafe(image, flatPieceImageUrl(kind, side));
+    slot.replaceChildren(image);
+  }
+
+  /**
+   * `taken` is a side's winnings, so the pieces in it belong to the *other*
+   * side - which is the colour they have to be drawn in.
+   */
+  function paintCaptures(
+    strip: HTMLElement,
+    taken: ChessPieceKind[],
+    edge: number,
+    pieceSide: ChessColor,
+  ): void {
     strip.replaceChildren();
 
     if (!taken.length && edge <= 0) {
@@ -337,13 +366,27 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
       for (let i = 0; i < (counts.get(kind) ?? 0); i++) {
         const slot = el("span", "mgchess-cap");
         strip.appendChild(slot);
-        attachSpriteIcon(slot, ["decor"], DEFAULT_PIECE_DECOR_IDS[kind], CAPTURE_ICON_PX, "chessHud");
+        fillCaptureSlot(slot, kind, pieceSide);
       }
     }
 
     // Only the leader shows a number: two of them would be the same fact
     // written twice, with a minus sign.
     if (edge > 0) strip.appendChild(el("span", "mgchess-edge", `+${edge}`));
+  }
+
+  /** The last set handed to us, so a view switch can redraw without one. */
+  let lastCaptures: Record<ChessColor, ChessPieceKind[]> = { white: [], black: [] };
+
+  function repaintCaptures(): void {
+    const material = (list: ChessPieceKind[]) =>
+      list.reduce((sum, kind) => sum + PIECE_VALUES[kind], 0);
+
+    const whiteMaterial = material(lastCaptures.white);
+    const blackMaterial = material(lastCaptures.black);
+
+    paintCaptures(whiteSide.caps, lastCaptures.white, whiteMaterial - blackMaterial, "black");
+    paintCaptures(blackSide.caps, lastCaptures.black, blackMaterial - whiteMaterial, "white");
   }
 
   // ── Drag ───────────────────────────────────────────────────────────────────
@@ -443,14 +486,8 @@ export function createChessHud(options: ChessHudOptions): ChessHudController {
 
   return {
     setCaptures(captures) {
-      const material = (list: ChessPieceKind[]) =>
-        list.reduce((sum, kind) => sum + PIECE_VALUES[kind], 0);
-
-      const whiteMaterial = material(captures.white ?? []);
-      const blackMaterial = material(captures.black ?? []);
-
-      paintCaptures(whiteSide.caps, captures.white ?? [], whiteMaterial - blackMaterial);
-      paintCaptures(blackSide.caps, captures.black ?? [], blackMaterial - whiteMaterial);
+      lastCaptures = { white: captures.white ?? [], black: captures.black ?? [] };
+      repaintCaptures();
     },
 
     setDrawOffer(from) {

@@ -41,6 +41,15 @@ function pieceUrl(piece: ChessPiece): string {
   return `${SKIN_BASE}/${side}${PIECE_LETTER[piece.kind]}.png`;
 }
 
+/**
+ * The same flat image the board uses, for anything outside the board that has
+ * to match it - the HUD's captured strips, so far. Plain DOM, no Pixi and no
+ * preload needed: an `<img>` fetches it itself.
+ */
+export function flatPieceImageUrl(kind: ChessPieceKind, side: ChessSide): string {
+  return pieceUrl({ kind, side });
+}
+
 /** Marks the child we added, so a redress replaces it instead of stacking. */
 const SKIN_FLAG = "__mgChessSkin";
 

@@ -151,6 +151,19 @@ const CSS = `
 }
 .mgchess-cap + .mgchess-cap { margin-left: -4px; }
 
+.mgchess-cap-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+/* A black piece is almost the panel's own colour, so it gets a thin edge to
+   sit on. The white ones already stand out and are left alone. */
+.mgchess-cap-img.is-black {
+  filter: drop-shadow(0 0 1px rgba(226,236,247,0.8));
+}
+
 .mgchess-edge {
   margin-left: 7px;
   font-size: 11px;
