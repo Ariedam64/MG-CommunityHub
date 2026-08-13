@@ -9,7 +9,8 @@
     "check:chess": "esbuild scripts/checkChessRules.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkChessRules.cjs --log-level=error && node node_modules/.cache/checkChessRules.cjs",
     "check:marks": "esbuild scripts/checkChessMarks.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkChessMarks.cjs --log-level=error && node node_modules/.cache/checkChessMarks.cjs",
     "check:update": "esbuild scripts/checkModUpdate.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkModUpdate.cjs --log-level=error && node node_modules/.cache/checkModUpdate.cjs",
-    "check:hubpos": "esbuild scripts/checkHubButtonPosition.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkHubButtonPosition.cjs --log-level=error && node node_modules/.cache/checkHubButtonPosition.cjs"
+    "check:hubpos": "esbuild scripts/checkHubButtonPosition.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkHubButtonPosition.cjs --log-level=error && node node_modules/.cache/checkHubButtonPosition.cjs",
+    "check:identity": "esbuild scripts/checkPlayerIdentity.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkPlayerIdentity.cjs --log-level=error && node node_modules/.cache/checkPlayerIdentity.cjs"
   },
   "devDependencies": {
     "@types/tampermonkey": "^5.0.4",

@@ -7,6 +7,7 @@
 // way the editor paints its planned garden.
 
 import { Atoms } from "@/store/atoms";
+import { readSlotId } from "@/api/identity";
 import { ensureStore, getAtomByLabel } from "@/store/jotai";
 import { tos } from "@/game/tileObjectSystem";
 
@@ -90,11 +91,7 @@ async function readSlotPlayerIds(): Promise<(string | null)[]> {
             .map(([, value]) => value)
         : [];
 
-    return slots.map((slot) => {
-      const data = slot?.data ?? slot;
-      const id = data?.databaseUserId ?? data?.playerId ?? slot?.databaseUserId ?? slot?.playerId;
-      return id == null ? null : String(id);
-    });
+    return slots.map((slot) => readSlotId(slot));
   } catch {
     return [];
   }

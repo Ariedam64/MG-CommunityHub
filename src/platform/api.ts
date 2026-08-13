@@ -65,6 +65,8 @@ export interface RoomPlayerPayload {
   name?: string;
   isConnected?: boolean;
   discordAvatarUrl?: string | null;
+  /** Renommé depuis `databaseUserId` côté serveur ; les deux peuvent arriver. */
+  discordUserId?: string;
   databaseUserId?: string;
   [key: string]: unknown;
 }
