@@ -53,9 +53,10 @@ function gmRequest<T>(
   method: "GET" | "POST" | "PATCH" | "DELETE",
   url: string,
   body?: unknown,
+  keyOverride?: string,
 ): Promise<HttpResponse<T>> {
   return new Promise((resolve) => {
-    const apiKey = getApiKey();
+    const apiKey = keyOverride ?? getApiKey();
     const headers: Record<string, string> = {};
 
     if (apiKey) {
@@ -96,9 +97,10 @@ async function fetchRequest<T>(
   method: "GET" | "POST" | "PATCH" | "DELETE",
   url: string,
   body?: unknown,
+  keyOverride?: string,
 ): Promise<HttpResponse<T>> {
   try {
-    const apiKey = getApiKey();
+    const apiKey = keyOverride ?? getApiKey();
     const headers: Record<string, string> = {};
 
     if (apiKey) {
@@ -136,6 +138,16 @@ async function fetchRequest<T>(
 
 // ========== Unified HTTP Client ==========
 
+/** Options communes aux helpers ci-dessous. */
+export interface HttpRequestOptions {
+  /**
+   * Clé à envoyer à la place de celle du storage. Sert à tester une clé
+   * candidate sans l'enregistrer : l'écrire d'abord pour la valider ensuite
+   * ferait partir le heartbeat avec une clé pas encore validée.
+   */
+  apiKey?: string;
+}
+
 /**
  * Unified HTTP request - automatically uses fetch (web) or GM_xmlhttpRequest (Discord)
  * Automatically pauses long polling during the request in Discord context
@@ -146,6 +158,7 @@ async function request<T>(
   options?: {
     query?: Record<string, string | number | undefined>;
     body?: unknown;
+    apiKey?: string;
   },
 ): Promise<HttpResponse<T>> {
   // Wrap the entire request with long poll pause (only active in Discord context)
@@ -154,15 +167,15 @@ async function request<T>(
 
     // Discord Activity → use GM_xmlhttpRequest
     if (isDiscordActivityContext()) {
-      return gmRequest<T>(method, url, options?.body);
+      return gmRequest<T>(method, url, options?.body, options?.apiKey);
     }
 
     // Web → try fetch, fallback to GM if needed
     try {
-      return await fetchRequest<T>(method, url, options?.body);
+      return await fetchRequest<T>(method, url, options?.body, options?.apiKey);
     } catch {
       // Fallback to GM if fetch fails
-      return gmRequest<T>(method, url, options?.body);
+      return gmRequest<T>(method, url, options?.body, options?.apiKey);
     }
   });
 }
@@ -172,8 +185,9 @@ async function request<T>(
 export async function httpGet<T>(
   path: string,
   query?: Record<string, string | number | undefined>,
+  options?: HttpRequestOptions,
 ): Promise<HttpResponse<T>> {
-  return request<T>("GET", path, { query });
+  return request<T>("GET", path, { query, apiKey: options?.apiKey });
 }
 
 export async function httpPost<T>(path: string, body: unknown): Promise<HttpResponse<T>> {

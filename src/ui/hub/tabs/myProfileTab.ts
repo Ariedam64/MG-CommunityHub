@@ -10,6 +10,7 @@ import {
   isNotificationSoundEnabled,
   setNotificationSoundEnabled,
 } from "../notificationSound";
+import { createApiKeySection, type ApiKeySection } from "./apiKeySection";
 import { createModVersionSection, type ModVersionSection } from "./modVersionSection";
 
 export function createMyProfileTab() {
@@ -498,17 +499,27 @@ export function createMyProfileTab() {
   // Rebuilt on every render, so the previous one has to let go of its
   // window listener first.
   let modVersionSection: ModVersionSection | null = null;
+  let apiKeySection: ApiKeySection | null = null;
   const render = async () => {
     renderCount++;
     console.log(`[MyProfile] render() called (count: ${renderCount})`);
     modVersionSection?.destroy();
     modVersionSection = null;
+    apiKeySection?.destroy();
+    apiKeySection = null;
     container.innerHTML = "";
     const header = await createProfileHeader();
     const notificationsSection = createNotificationsSection();
     const privacySection = createPrivacySection();
+    apiKeySection = createApiKeySection();
     modVersionSection = createModVersionSection();
-    container.append(header, notificationsSection, privacySection, modVersionSection.root);
+    container.append(
+      header,
+      notificationsSection,
+      privacySection,
+      apiKeySection.root,
+      modVersionSection.root,
+    );
   };
 
   // Initial render to show placeholder or data
@@ -537,6 +548,8 @@ export function createMyProfileTab() {
       unsubscribeWelcome();
       modVersionSection?.destroy();
       modVersionSection = null;
+      apiKeySection?.destroy();
+      apiKeySection = null;
       container.remove();
     },
   };

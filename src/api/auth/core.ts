@@ -3,6 +3,7 @@
 
 import { isDiscordActivityContext } from "@/platform/discordCsp";
 import { getApiKey, hasApiKey, setApiKey } from "@/storage/storage";
+import { httpGet } from "../client/http";
 import { API_ORIGIN } from "../config";
 
 // Déclaration GM_openInTab
@@ -143,6 +144,31 @@ export async function ensureApiKey(): Promise<string | null> {
   }
 
   return newKey;
+}
+
+/**
+ * Issue d'un test de clé. « injoignable » est distinct de « refusée » : dire
+ * qu'une clé est mauvaise alors que c'est le réseau qui est tombé pousserait à
+ * la remplacer par une autre pour rien.
+ */
+export type ApiKeyCheck = "valid" | "invalid" | "unreachable";
+
+/** Endpoint authentifié, sans paramètre ni effet de bord. */
+const VERIFY_ENDPOINT = "privacy";
+
+/**
+ * Teste une clé sans l'enregistrer, pour ne remplacer celle qui marche
+ * qu'une fois la nouvelle acceptée par le serveur.
+ */
+export async function verifyApiKey(candidate: string): Promise<ApiKeyCheck> {
+  const key = candidate.trim();
+  if (!key) return "invalid";
+
+  const { status } = await httpGet<unknown>(VERIFY_ENDPOINT, undefined, { apiKey: key });
+  if (status === 200) return "valid";
+  if (status === 401 || status === 403) return "invalid";
+  // 0 (réseau), 5xx, tout le reste : on ne sait pas, donc on ne touche à rien.
+  return "unreachable";
 }
 
 /**
