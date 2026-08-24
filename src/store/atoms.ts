@@ -164,10 +164,12 @@ export const friendBonusMultiplier = makeAtom<any>("friendBonusMultiplierAtom")
 export const garden = makeView<any, GardenState | null>("myDataAtom", { path: "garden" });
 export const gardenTileObjects = makeView<any, Record<string, any>>("myDataAtom", { path: "garden.tileObjects" });
 export const favoriteIds = makeView<any, string[]>("myInventoryAtom", { path: "favoritedItemIds" });
+// `playerAtom.id` porte aujourd'hui l'id de compte (il portait un id de room
+// `p_…` avant le renommage). Cette vue reste brute et sans garantie : une vue
+// mono-chemin renvoie null en silence au prochain renommage, et ne sait pas
+// distinguer les deux espaces de noms. Pour identifier le joueur, passer par
+// resolveMyAccountId() dans @/api/identity.
 export const playerId = makeView<any, string | null>("playerAtom", { path: "id" });
-// Pas de vue sur l'identité de compte ici : le champ a déjà été renommé une
-// fois et une vue mono-chemin renvoie null en silence quand cela arrive.
-// Passer par resolveMyAccountId() dans @/api/identity.
 export const myOwnCurrentGardenObjectType = makeView<any, string | null>("myOwnCurrentGardenObjectAtom", { path: "objectType" });
 
 /* stateAtom sub-views (optionnel) */

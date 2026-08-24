@@ -198,8 +198,9 @@ export async function buildPlayerStatePayload(
     }
 
     const userSlots = normalizedPlayers.map((player) => {
-      // Uniquement l'id de compte : `player.id` est un id de room éphémère, et
-      // le remonter comme playerId crée un compte fantôme à chaque join.
+      // Toujours via readAccountId : il sait quel champ porte le compte selon
+      // la version du jeu, et refuse les ids de room qui créeraient un compte
+      // fantôme à chaque join.
       const slotId = readAccountId(player);
       const coins = slotId ? coinsById.get(slotId) ?? null : null;
       return {

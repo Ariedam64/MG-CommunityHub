@@ -13,6 +13,7 @@
 
 import { Atoms } from "@/store/atoms";
 import type { GardenState } from "@/store/atoms";
+import { readSlotId, resolveMyAccountId } from "@/api/identity";
 import { tos } from "./tileObjectSystem";
 
 const EMPTY_GARDEN: GardenState = { tileObjects: {}, boardwalkTileObjects: {} };
@@ -58,7 +59,9 @@ function findPlayerSlot(
 ): SlotMatch | null {
   if (!slots || typeof slots !== "object") return null;
 
-  const isMatch = (slot: any) => slot && String(slot.playerId || slot.id || "") === String(playerId);
+  // readSlotId plutôt que `slot.playerId || slot.id` : les slots sont clés par
+  // `userId` depuis le renommage, et l'ancienne lecture ne trouvait plus rien.
+  const isMatch = (slot: any) => readSlotId(slot) === String(playerId);
 
   if (Array.isArray(slots)) {
     const arr = slots as any[];
@@ -117,10 +120,17 @@ function buildStateWithUserSlots(cur: any, userSlots: any) {
   };
 }
 
+/**
+ * Notre id de compte, celui qui clé les userSlots. On passe par
+ * resolveMyAccountId au lieu de lire `playerAtom.id` en direct : le champ a déjà
+ * changé de sens une fois, et un id de room ne matcherait aucun slot.
+ */
 async function getPlayerId(): Promise<string | null> {
   try {
-    const id = await Atoms.player.playerId.get();
-    return typeof id === "string" && id ? id : null;
+    const me = await Atoms.player.player.get();
+    const state = (await Atoms.root.state.get().catch(() => null)) as any;
+    const players = Array.isArray(state?.data?.players) ? state.data.players : [];
+    return resolveMyAccountId(me, players);
   } catch {
     return null;
   }

@@ -61,11 +61,12 @@ export interface RequestRoomOptions {
 }
 
 export interface RoomPlayerPayload {
+  /** Id de compte depuis le renommage ; anciennement un id de room `p_…`. */
   id?: string;
   name?: string;
   isConnected?: boolean;
   discordAvatarUrl?: string | null;
-  /** Renommé depuis `databaseUserId` côté serveur ; les deux peuvent arriver. */
+  /** Ancien porteur de l'identité, absent des comptes non liés à Discord. */
   discordUserId?: string;
   databaseUserId?: string;
   [key: string]: unknown;
