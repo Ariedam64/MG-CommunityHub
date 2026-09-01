@@ -152,7 +152,10 @@ export const mySelectedItemRotation = makeAtom<any>("mySelectedItemRotationAtom"
 
 export const weather = makeAtom<string | null>("weatherAtom")
 
-export const activeModal = makeAtom<string | null>("activeModalAtom");
+// `activeModalAtom` a été renommé `activeModalStateAtom`. Un label introuvable
+// ne lève rien (Store.set fait un no-op), donc toute modale branchée dessus
+// échoue en silence : garder ce nom à jour est ce qui fait vivre les fakes.
+export const activeModal = makeAtom<string | null>("activeModalStateAtom");
 export const inventoryModalIsActive = makeAtom<boolean>("inventoryModalIsActiveAtom");
 export const avatarTriggerAnimationAtom = makeAtom<AvatarTriggerAnimation | null>("avatarTriggerAnimationAtom")
 

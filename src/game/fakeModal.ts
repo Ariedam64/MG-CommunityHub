@@ -20,10 +20,34 @@ export type FakeModalOptions = {
 
 /* ------------------------------- Modal I/O ------------------------------- */
 
+const INVENTORY_MODAL_ID: ModalId = "inventory";
+
+/**
+ * L'inventaire ne passe plus par `activeModalStateAtom` : le jeu l'ouvre et le
+ * ferme via son propre booléen `inventoryModalIsActiveAtom`. Journal, stats et
+ * activity log restent portés par la valeur d'activeModalState.
+ *
+ * Cette distinction n'est pas cosmétique : une gate branchée sur un atom qui ne
+ * bouge pas ne réévalue jamais l'atom patché, donc le fake reste invisible sans
+ * qu'aucune erreur ne soit levée.
+ */
+function isInventoryModal(modalId: ModalId): boolean {
+  return modalId === INVENTORY_MODAL_ID;
+}
+
+/** L'atom qui porte réellement l'état ouvert/fermé de cette modale. */
+function stateAtomForModal(modalId: ModalId) {
+  return isInventoryModal(modalId) ? Atoms.ui.inventoryModalIsActive : Atoms.ui.activeModal;
+}
+
 export async function openModal(modalId: ModalId) {
   try {
+    if (isInventoryModal(modalId)) {
+      await Atoms.ui.inventoryModalIsActive.set(true);
+      return;
+    }
     await Atoms.ui.activeModal.set(modalId);
-    await Atoms.ui.inventoryModalIsActive.set(modalId === "inventory");
+    await Atoms.ui.inventoryModalIsActive.set(false);
   } catch (err) {
   }
 }
@@ -33,12 +57,18 @@ export async function closeModal(modalId?: ModalId) {
   // Évite de tuer une modal que l'utilisateur a ouverte entretemps. Sans argument,
   // on garde le comportement "force close" (auth gate, etc.).
   try {
+    if (modalId && isInventoryModal(modalId)) {
+      const active = await Atoms.ui.inventoryModalIsActive.get();
+      if (active !== true) return;
+      await Atoms.ui.inventoryModalIsActive.set(false);
+      return;
+    }
     if (modalId) {
       const current = await Atoms.ui.activeModal.get();
       if (current !== modalId) return;
     }
     await Atoms.ui.activeModal.set(null);
-    if (modalId === "inventory" || !modalId) {
+    if (!modalId) {
       await Atoms.ui.inventoryModalIsActive.set(false);
     }
   } catch (err) {
@@ -46,12 +76,12 @@ export async function closeModal(modalId?: ModalId) {
 }
 
 export function isModalOpen(value: any, modalId: ModalId) {
-  return value === modalId;
+  return isInventoryModal(modalId) ? value === true : value === modalId;
 }
 
 export async function isModalOpenAsync(modalId: ModalId): Promise<boolean> {
   try {
-    const v = await Atoms.ui.activeModal.get();
+    const v = await stateAtomForModal(modalId).get();
     return isModalOpen(v, modalId);
   } catch (err) {
     return false;
@@ -62,7 +92,7 @@ export async function waitModalClosed(modalId: ModalId, timeoutMs = 120000): Pro
   const t0 = performance.now();
   while (performance.now() - t0 < timeoutMs) {
     try {
-      const v = await Atoms.ui.activeModal.get();
+      const v = await stateAtomForModal(modalId).get();
       if (!isModalOpen(v, modalId)) return true;
     } catch {
       // si l'atom n'est pas lisible, on considère "fermée"
@@ -77,7 +107,7 @@ export async function waitModalClosed(modalId: ModalId, timeoutMs = 120000): Pro
 
 function gateForModal(modalId: ModalId) {
   return {
-    label: Atoms.ui.activeModal.label,
+    label: stateAtomForModal(modalId).label,
     isOpen: (v: any) => isModalOpen(v, modalId),
     openAction: () => openModal(modalId),
     closeAction: () => closeModal(modalId),
@@ -137,9 +167,13 @@ export async function fakeModalHide(_modalId: ModalId, configs: FakeConfig<any>[
 const SHARED_MYDATA_PATCH: FakeConfig<any> = {
   label: Atoms.data.myData.label,
   merge: mergeMyData,
+  // L'inventaire n'apparaît plus dans activeModalState : sans cette dépendance
+  // explicite, myData ne se réévalue pas à l'ouverture de l'inventaire et la
+  // modale affiche la vraie donnée du joueur au lieu de celle de l'ami.
+  extraDeps: [Atoms.ui.inventoryModalIsActive.label],
   gate: {
     label: Atoms.ui.activeModal.label,
-    isOpen: (v) => v === "inventory" || v === "journal" || v === "stats" || v === "activityLog",
+    isOpen: (v) => v === "journal" || v === "stats" || v === "activityLog",
     autoDisableOnClose: true,
   },
 };
@@ -149,15 +183,13 @@ const INVENTORY_ATOM_PATCH: FakeConfig<any> = {
   label: Atoms.inventory.myInventory.label,
   merge: (_real: any, fake: any) => fake,
   gate: {
-    label: Atoms.ui.activeModal.label,
-    isOpen: (v) => v === "inventory",
+    label: Atoms.ui.inventoryModalIsActive.label,
+    isOpen: (v) => v === true,
     autoDisableOnClose: true,
   },
 };
 
 /* ============================ Spécifique INVENTORY ============================ */
-
-const INVENTORY_MODAL_ID: ModalId = "inventory";
 
 export async function openInventoryPanel() {
   return openModal(INVENTORY_MODAL_ID);
