@@ -5,7 +5,7 @@ import { Atoms, myPetHutchPetItems } from "@/store/atoms";
 import {
   fakeInventoryShow,
   fakeInventoryHide,
-  isInventoryOpen,
+  isInventoryPanelOpen,
 } from "@/game/fakeModal";
 import { attachSpriteIcon } from "@/ui/spriteIcons";
 import { ShopsService } from "@/game/shopIdentity";
@@ -1283,10 +1283,11 @@ async function waitForItemSelection(timeoutMs = 120_000): Promise<number | null>
   try { await Atoms.inventory.mySelectedItemId.set(null); } catch {}
 
   while (performance.now() - start < timeoutMs) {
-    // If the modal was closed, bail out
+    // If the modal was closed, bail out. Via isInventoryPanelOpen : depuis la
+    // v1029, l'inventaire est porté par inventoryModalIsActiveAtom et non par
+    // activeModalState, qui reste nul pendant tout le temps où il est ouvert.
     try {
-      const modalVal = await Atoms.ui.activeModal.get();
-      if (!isInventoryOpen(modalVal)) return null;
+      if (!(await isInventoryPanelOpen())) return null;
     } catch { return null; }
 
     // Check if an item was selected
