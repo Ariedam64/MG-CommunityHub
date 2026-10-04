@@ -42,7 +42,7 @@ const devMeta = meta
 
 function makeOptions(dev) {
   return {
-    entryPoints: [path.join(__dirname, 'src', 'main.ts')],
+    entryPoints: [path.join(__dirname, 'src', 'entry.ts')],
     bundle: true,
     format: 'iife',
     target: 'es2020',

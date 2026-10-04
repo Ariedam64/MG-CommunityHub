@@ -1,5 +1,6 @@
 // src/store/atoms.ts
-import { makeAtom, makeView, HubEq } from "./hub";
+import { makeAtom, makeView, HubEq, type View } from "./hub";
+import { modalNameOf, nextModalState } from "@/game/modalState";
 
 /* ============================================================================
  * Types
@@ -155,7 +156,33 @@ export const weather = makeAtom<string | null>("weatherAtom")
 // `activeModalAtom` a été renommé `activeModalStateAtom`. Un label introuvable
 // ne lève rien (Store.set fait un no-op), donc toute modale branchée dessus
 // échoue en silence : garder ce nom à jour est ce qui fait vivre les fakes.
-export const activeModal = makeAtom<string | null>("activeModalStateAtom");
+//
+// Depuis v1342 il vaut `{ modal, openId }` au lieu du nom. Cette vue garde
+// l'interface `string | null` pour tout le hub et traduit dans la forme que le
+// build utilise (voir game/modalState.ts), comme dans Arie's Mod.
+const activeModalRaw = makeAtom<any>("activeModalStateAtom");
+const sameModal = (a: unknown, b: unknown) => modalNameOf(a) === modalNameOf(b);
+export const activeModal: View<string | null> = {
+  label: activeModalRaw.label,
+  get: async () => modalNameOf(await activeModalRaw.get()),
+  set: async (next) => {
+    const raw = await activeModalRaw.get();
+    const value = nextModalState(raw, next);
+    if (value !== undefined) await activeModalRaw.set(value);
+  },
+  update: async (fn) => {
+    const next = fn(modalNameOf(await activeModalRaw.get()));
+    await activeModal.set(next);
+    return next;
+  },
+  onChange: (cb) =>
+    activeModalRaw.onChange((next, prev) => cb(modalNameOf(next), modalNameOf(prev)), sameModal),
+  onChangeNow: (cb) =>
+    activeModalRaw.onChangeNow((next, prev) => cb(modalNameOf(next), modalNameOf(prev)), sameModal),
+  asSignature: (opts) => activeModalRaw.asSignature(opts as any) as any,
+};
+// Since v1396 Stats and Activity Log share the `activityLog` modal; this picks the tab (`"logs"` | `"stats"`).
+export const activityLogTab = makeAtom<string>("activityLogTabAtom");
 export const inventoryModalIsActive = makeAtom<boolean>("inventoryModalIsActiveAtom");
 export const avatarTriggerAnimationAtom = makeAtom<AvatarTriggerAnimation | null>("avatarTriggerAnimationAtom")
 
@@ -332,7 +359,7 @@ export const myPetsAbilitiesTrigger = {
  * Registry (lecture seule)
  * ==========================================================================*/
 export const Atoms = {
-  ui: { activeModal, inventoryModalIsActive },
+  ui: { activeModal, inventoryModalIsActive, activityLogTab },
   server: { numPlayers, friendBonusMultiplier },
   player: { 
     position, 

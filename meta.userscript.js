@@ -1,9 +1,9 @@
 ﻿// ==UserScript==
 // @name         MG Community Hub
 // @namespace    Quinoa
-// @version      1.0.7
+// @version      1.0.8
 // @description  Community Hub for Magic Garden / Magic Circle â€” friends, messages, groups, leaderboard, rooms. Standalone companion of Arie's Mod.
-// @match        https://1227719606223765687.discordsays.com/*
+// @include      /^https:\/\/1227719606223765687\.discordsays\.com\/.*[?&]mc_shell_frame=1(&|#|$)/
 // @match        https://magiccircle.gg/r/*
 // @match        https://magicgarden.gg/r/*
 // @match        https://starweaver.org/r/*

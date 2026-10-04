@@ -283,10 +283,15 @@ export async function viewStats(player: PlayerView): Promise<void> {
     waitStatsModalClosed,
     fakeStatsHide,
   } = await import("@/game/fakeModal");
+  const { skipNextActivityLogHistoryReopen } = await import("@/game/activityLogsHistory");
 
   try {
     // Close community hub
     window.dispatchEvent(new CustomEvent(CH_EVENTS.CLOSE));
+
+    // Stats now opens the activityLog modal (v1396): without the skip, Arie's
+    // Mod's history watcher would swap its own logs over this player's data.
+    skipNextActivityLogHistoryReopen();
 
     // Show the stats modal with player's data
     await fakeStatsShow(state.stats, { open: true });
