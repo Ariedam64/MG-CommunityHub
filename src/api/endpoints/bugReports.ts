@@ -58,8 +58,10 @@ function send(req: BugReportHttpRequest): Promise<BugReportHttpResponse> {
     try {
       return await sendWithFetch(req);
     } catch (error) {
-      // A request that timed out may still have reached the server: sending it
-      // again could file the same report twice.
+      // GM stands in only when fetch cannot connect. A request that timed out
+      // may still have reached the server: the report itself would come back
+      // through its follow token, but a screenshot or a comment sent again
+      // would be kept twice, and the player would wait twice as long.
       if (!hasGM() || /timed out/.test(String((error as Error)?.message))) throw error;
       return await sendWithGM(req);
     }

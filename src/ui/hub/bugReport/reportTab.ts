@@ -1,24 +1,22 @@
 // src/ui/hub/bugReport/reportTab.ts
 // The New report tab: the form, its screenshots and attached data, and what
 // happens on Send. A report that cannot be sent is never lost: the draft
-// stays, and it can be saved to a file (copied, inside Discord) to share by
-// hand.
+// stays with its follow token, so sending again gets the report back if the
+// failed try did reach the server, and it can be saved to a file (copied,
+// inside Discord) to share by hand.
 
-import { bugReportClient } from "@/api/endpoints/bugReports";
 import {
   describeBugReportError,
-  submitBugReport,
   type BugReportAttachment,
   type BugReportError,
   type SubmitProgress,
 } from "@/bugReport/core/client";
 import { descriptionProblem, prepareBugReport, prepareContext, titleProblem } from "@/bugReport/core/prepare";
-import { sentReportFrom } from "@/bugReport/core/sentReports";
 import type { BugReportPayload } from "@/bugReport/core/types";
 import { collectAutoFields, type AutoFields } from "@/bugReport/context";
 import { clearDraft, draftHasText, readDraft, rememberContact, saveDraftSoon, type Draft } from "@/bugReport/draft";
 import { BUG_REPORT_PROJECT } from "@/bugReport/project";
-import { rememberSentReport } from "@/bugReport/sentStore";
+import { sendBugReport } from "@/bugReport/send";
 import { isDiscordActivityContext } from "@/platform/discordCsp";
 import { MOD_UPDATE_EVENT, getUpdateState, openUpdatePage } from "@/platform/modUpdate";
 import { buildAttachedData, showPreviewDialog } from "./attachedData";
@@ -182,7 +180,10 @@ export function createReportTab(host: ReportTabHost): ReportTab {
       const attachments = shots.attachments();
       const payload = toPayload(values, await collectAutoFields(attached.read()), attachments.length);
       lastAttempt = { payload, attachments };
-      const result = await submitBugReport(bugReportClient, payload, attachments, (step) => {
+      // Sent with the follow token kept next to the draft: a retry of this
+      // report after a lost answer gets the same report back. On success the
+      // report joins My reports, and the draft and its token are gone.
+      const result = await sendBugReport(payload, attachments, (step) => {
         progress.textContent = progressText(step);
       });
       progress.textContent = "";
@@ -193,9 +194,7 @@ export function createReportTab(host: ReportTabHost): ReportTab {
         saveButton.hidden = !SAVE_WORTHY.has(result.error.kind);
         return;
       }
-      rememberSentReport(sentReportFrom(result.report, payload.title.trim()));
       rememberContact(values.contact);
-      clearDraft();
       draftNotice.hide();
       form.hidden = true;
       sent.hidden = false;
@@ -234,7 +233,7 @@ export function createReportTab(host: ReportTabHost): ReportTab {
   async function saveReport(): Promise<void> {
     if (!lastAttempt) return;
     const prepared = prepareBugReport(lastAttempt.payload);
-    const report = prepared.ok ? prepared.payload : lastAttempt.payload;
+    const report = prepared.ok === true ? prepared.payload : lastAttempt.payload;
     if (inDiscord) {
       // The text alone: screenshots as base64 would not paste anywhere useful.
       const copied = await copyText(JSON.stringify(report, null, 2));

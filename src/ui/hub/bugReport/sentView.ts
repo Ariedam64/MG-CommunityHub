@@ -19,6 +19,10 @@ export function showSentView(
   const icon = el("div", "qws-ch-bug-success-icon");
   icon.innerHTML = CHECK_SVG;
   root.append(icon, el("div", "qws-ch-bug-success-title", "Thanks, your report was sent."));
+  if (result.resumed) {
+    // The answer to an earlier try was lost, but that try had arrived: the server kept its text.
+    root.appendChild(el("p", "qws-ch-bug-note", "Your earlier try had already arrived, so the report keeps the text you sent then."));
+  }
 
   const ref = el("div", "qws-ch-bug-ref");
   const copy = button("Copy", {

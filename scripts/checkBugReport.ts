@@ -9,8 +9,12 @@
 //     Discord activity, fetch elsewhere), so a duplicate still names the
 //     report already sent; it falls back to GM when fetch cannot connect,
 //     never sends again after a timeout, and carries the player's key;
+//   - a retry after a lost answer carries the follow token kept next to the
+//     draft and gets the same report back instead of a duplicate, the
+//     screenshots that never left go up, and success forgets the token;
 //   - the sent reports live in GM storage, newest first, at most 50;
-//   - the draft survives a reload and is gone once cleared;
+//   - the draft survives a reload and is gone once cleared, and its token
+//     stays while it is edited, goes when it is emptied or discarded;
 //   - the console capture installed at boot records the page's errors.
 //
 // Run with: npm run check:bugreport
@@ -18,11 +22,13 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { bugReportClient } from "../src/api/endpoints/bugReports";
-import { listMyReports, submitBugReport, type BugReportHttpRequest } from "../src/bugReport/core/client";
+import { listMyReports, submitBugReport, type BugReportAttachment, type BugReportHttpRequest } from "../src/bugReport/core/client";
 import { prepareContext } from "../src/bugReport/core/prepare";
-import type { BugReportPayload } from "../src/bugReport/core/types";
-import { clearDraft, readDraft, rememberContact, saveDraftSoon } from "../src/bugReport/draft";
+import { isFollowToken, type AttachmentKind, type BugReportPayload } from "../src/bugReport/core/types";
+import { clearDraft, pendingReport, readDraft, rememberContact, saveDraftSoon } from "../src/bugReport/draft";
+import { sendBugReport } from "../src/bugReport/send";
 import { readSentReports, rememberSentReport } from "../src/bugReport/sentStore";
+import { readHubPath } from "../src/storage/storage";
 
 let failures = 0;
 
@@ -65,19 +71,23 @@ installGM();
 const API_KEY = "0123456789abcdef0123456789abcdef";
 const TOKEN = "ab".repeat(32);
 
-// Answers queued per transport, and what each transport was asked.
+// Answers queued per transport, or a backend that answers every request on
+// both, and what each transport was asked.
 type Reply = { status: number; body?: unknown } | "network" | "hang";
 let gmReplies: Reply[] = [];
 let fetchReplies: Reply[] = [];
+let backend: ((url: string, body: any) => Reply) | null = null;
 let gmCalls: any[] = [];
 let fetchCalls: any[] = [];
+
+const parseBody = (body: unknown) => (typeof body === "string" ? JSON.parse(body) : null);
 
 const bodyText = (reply: { body?: unknown }) =>
   reply.body === undefined ? "" : typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body);
 
 g.GM_xmlhttpRequest = (details: any) => {
   gmCalls.push(details);
-  const reply = gmReplies.shift() ?? { status: 500 };
+  const reply = backend ? backend(details.url, parseBody(details.data)) : (gmReplies.shift() ?? { status: 500 });
   setTimeout(() => {
     if (reply === "network") details.onerror?.({});
     else if (reply === "hang") details.ontimeout?.();
@@ -88,7 +98,7 @@ g.GM_xmlhttpRequest = (details: any) => {
 
 g.fetch = (url: string, init: any) => {
   fetchCalls.push({ url, ...init });
-  const reply = fetchReplies.shift() ?? { status: 500 };
+  const reply = backend ? backend(url, parseBody(init.body)) : (fetchReplies.shift() ?? { status: 500 });
   if (reply === "network") return Promise.reject(new TypeError("Failed to fetch"));
   if (reply === "hang") {
     return new Promise((_, reject) => {
@@ -102,9 +112,52 @@ function reset(hostname: string): void {
   g.location.hostname = hostname;
   gmReplies = [];
   fetchReplies = [];
+  backend = null;
   gmCalls = [];
   fetchCalls = [];
 }
+
+type HeldReport = { id: number; token: string; description: string; screenshots: number };
+
+/**
+ * A backend that keeps the contract's rules on follow tokens: a token it
+ * already has gets its report back (200, with the count of screenshots it
+ * holds), the same description again under another token is a duplicate
+ * (409). With `loseFirstAnswer`, the first report is created but its answer
+ * never comes, as when the request times out.
+ */
+function idempotentBackend(options: { loseFirstAnswer?: boolean; onReport?: () => void } = {}): HeldReport[] {
+  const reports: HeldReport[] = [];
+  let lose = options.loseFirstAnswer === true;
+  const answer = (report: HeldReport, status: number): Reply => ({
+    status,
+    body: { id: report.id, ref: `BR-${report.id}`, followToken: report.token, status: "new", attachmentsReceived: report.screenshots },
+  });
+  backend = (url, body) => {
+    if (url.endsWith("/bug-reports")) {
+      options.onReport?.();
+      const known = reports.find((r) => typeof body?.followToken === "string" && r.token === body.followToken);
+      if (known) return answer(known, 200);
+      const twin = reports.find((r) => r.description === body?.description);
+      if (twin) return { status: 409, body: { error: "duplicate", id: twin.id, ref: `BR-${twin.id}` } };
+      const report: HeldReport = { id: 900 + reports.length, token: body?.followToken ?? "cd".repeat(32), description: body?.description, screenshots: 0 };
+      reports.push(report);
+      if (lose) {
+        lose = false;
+        return "hang";
+      }
+      return answer(report, 201);
+    }
+    const id = Number(/bug-reports\/(\d+)\/attachments$/.exec(url)?.[1]);
+    const report = reports.find((r) => r.id === id && r.token === body?.followToken);
+    if (!report) return { status: 404, body: { error: "not_found" } };
+    report.screenshots++;
+    return { status: 201, body: { id: report.screenshots } };
+  };
+  return reports;
+}
+
+const shot = (kind: AttachmentKind): BugReportAttachment => ({ mime: "image/webp", base64: "UklGRg==", width: 1280, height: 720, bytes: 6, kind });
 
 function payload(): BugReportPayload {
   return {
@@ -169,12 +222,10 @@ async function main(): Promise<void> {
   reset("magicgarden.gg");
   fetchReplies = [{ status: 201, body: { id: 7, ref: "BR-7", followToken: TOKEN, status: "new" } }];
   sent = await submitBugReport(bugReportClient, payload());
-  check("web: a created report comes back with its token", sent.ok ? sent.report : null, {
-    id: 7,
-    ref: "BR-7",
-    followToken: TOKEN,
-    status: "new",
-  });
+  check("web: a created report comes back with its token", sent.ok === true ? [sent.report, sent.resumed] : null, [
+    { id: 7, ref: "BR-7", followToken: TOKEN, status: "new", attachmentsReceived: 0 },
+    false,
+  ]);
 
   reset("magicgarden.gg");
   fetchReplies = ["network"];
@@ -247,6 +298,80 @@ async function main(): Promise<void> {
   fetchReplies = [{ status: 201, body: { id: 8, ref: "BR-8", followToken: TOKEN, status: "new" } }];
   await submitBugReport(bugReportClient, payload());
   check("signed out: no Authorization header", fetchCalls[0]?.headers?.Authorization, undefined);
+
+  // ── A retry after a lost answer gets the same report back ─────────────────
+  // Inside Discord, where GM is the only way out. The first try reaches the
+  // server, which creates the report, but its answer never comes back; the
+  // player closes the modal (or reloads the page), opens it again and sends
+  // again. The sent list starts empty here, the checks below rely on it.
+  gm.set("aries_api_key", API_KEY);
+  clearDraft();
+  reset("1227719606223765687.discordsays.com");
+  let tokenAtRequest: unknown = null;
+  const held = idempotentBackend({
+    loseFirstAnswer: true,
+    onReport: () => {
+      tokenAtRequest ??= readHubPath("bugReport.pendingToken");
+    },
+  });
+  const shots = [shot("upload"), shot("screen")];
+  saveDraftSoon({ category: "bug", title: payload().title, description: payload().description });
+  await sleep(700);
+  const firstTry = await sendBugReport(payload(), shots);
+  const firstToken = parseBody(gmCalls[0]?.data)?.followToken;
+  check("retry: the first try times out", firstTry.ok === false ? firstTry.error.kind : null, "timeout");
+  check("retry: it carries a follow token made in the browser", isFollowToken(firstToken), true);
+  check("retry: saved next to the draft before the request went out", tokenAtRequest, firstToken);
+  check("retry: no screenshot follows a failed try", gmCalls.length, 1);
+  check("retry: the draft is still there", readDraft().title, payload().title);
+  check("retry: the sent list does not have it yet", readSentReports(), []);
+
+  const retry = await sendBugReport(payload(), shots);
+  check("retry: the same token goes again", parseBody(gmCalls[1]?.data)?.followToken, firstToken);
+  check(
+    "retry: the report the first try created comes back",
+    retry.ok === true ? [retry.resumed, retry.report.id, retry.report.followToken, retry.attachmentsSent] : retry,
+    [true, 900, firstToken, 2],
+  );
+  check("retry: instead of a duplicate on the server", held.length, 1);
+  check(
+    "retry: then both screenshots, which never left, go up",
+    gmCalls.slice(2).map((call) => [call.url, parseBody(call.data)?.kind]),
+    [
+      ["https://ariesmod-api.ariedam.fr/bug-reports/900/attachments", "upload"],
+      ["https://ariesmod-api.ariedam.fr/bug-reports/900/attachments", "screen"],
+    ],
+  );
+  check("retry: the sent list holds it once, with its token", readSentReports().map((r) => [r.id, r.followToken]), [[900, firstToken]]);
+  check("retry: success forgets the draft and its token", [readDraft().title, readHubPath("bugReport.pendingToken")], [undefined, undefined]);
+
+  // One screenshot had arrived before the page was closed: only the others go.
+  reset("1227719606223765687.discordsays.com");
+  const resumed = idempotentBackend();
+  const pending = pendingReport();
+  check("the next report gets a new token", isFollowToken(pending.followToken) && pending.followToken !== firstToken, true);
+  resumed.push({ id: 950, token: pending.followToken ?? "", description: payload().description, screenshots: 1 });
+  const rest = await sendBugReport(payload(), [shot("upload"), shot("screen"), shot("upload")]);
+  check("resume: a report already there comes back", rest.ok === true ? [rest.resumed, rest.report.id, rest.attachmentsSent] : rest, [true, 950, 3]);
+  check("resume: only the screenshots the server lacks go up", gmCalls.slice(1).map((call) => parseBody(call.data)?.kind), ["screen", "upload"]);
+  check("resume: the server ends up with three", resumed[0]?.screenshots, 3);
+
+  // The token belongs to the report in the form, not to the form.
+  const typed = pendingReport().followToken;
+  check("a pending token is kept while nothing is sent", pendingReport().followToken, typed);
+  saveDraftSoon({ title: "Still the same report", description: "Only a few more words this time." });
+  await sleep(700);
+  check("editing the draft keeps the token", pendingReport().followToken, typed);
+  saveDraftSoon({ category: "bug" });
+  await sleep(700);
+  check("a form emptied by hand drops it", readHubPath("bugReport.pendingToken"), undefined);
+  const kept = pendingReport().followToken;
+  clearDraft();
+  check("discarding the draft drops it too", readHubPath("bugReport.pendingToken"), undefined);
+  check("and the report after that gets a new one", pendingReport().followToken !== kept, true);
+  clearDraft();
+  gm.delete("mgch_bug_reports_sent");
+  gm.delete("aries_api_key");
 
   // ── Sent reports: GM storage, newest first, at most 50 ────────────────────
   check("nothing sent yet", readSentReports(), []);
