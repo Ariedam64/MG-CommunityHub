@@ -2,7 +2,9 @@
 // The My reports tab: the reports sent from this browser, with their status,
 // the version that fixes them, the developer's reply and the conversation,
 // where the player can answer. Read with the follow tokens kept at sending
-// time, so it works without any account.
+// time, so it works without any account. With an API key, the player's
+// verified reports of the hub come too, even those sent from another device,
+// and can be answered with the key alone.
 
 import { bugReportClient } from "@/api/endpoints/bugReports";
 import { addReportComment, describeBugReportError, listMyReports, type FollowedReport } from "@/bugReport/core/client";
@@ -11,6 +13,8 @@ import type { SentReport } from "@/bugReport/core/sentReports";
 import { acceptsComments, statusLabel } from "@/bugReport/core/status";
 import type { MyBugReport } from "@/bugReport/core/types";
 import { isVersionBelow } from "@/bugReport/core/version";
+import { BUG_REPORT_PROJECT } from "@/bugReport/project";
+import { replyTarget, reportRows, type ReportRow } from "@/bugReport/reportRows";
 import { onSentReportsChange, readSentReports } from "@/bugReport/sentStore";
 import { openUpdatePage } from "@/platform/modUpdate";
 import { getLocalVersion } from "@/platform/version";
@@ -27,8 +31,6 @@ export type MyReportsTab = {
   show(): void;
   destroy(): void;
 };
-
-type Row = { local: SentReport | null; remote: MyBugReport | null; id: number };
 
 function toneOf(status: string): string {
   if (status === "fixed") return " ok";
@@ -102,11 +104,7 @@ export function createMyReportsTab(isShown: () => boolean): MyReportsTab {
   }
 
   function render(local: SentReport[]): void {
-    const rows: Row[] = local.map((entry) => ({ id: entry.id, local: entry, remote: remote.get(entry.id) ?? null }));
-    // Reports verified with the player's key that this browser did not send.
-    const extra = [...remote.values()].filter((report) => !local.some((entry) => entry.id === report.id));
-    for (const report of extra.sort((a, b) => b.id - a.id)) rows.push({ id: report.id, local: null, remote: report });
-
+    const rows = reportRows(local, remote, BUG_REPORT_PROJECT.id);
     if (!rows.length) {
       list.replaceChildren(emptyState());
       return;
@@ -114,7 +112,7 @@ export function createMyReportsTab(isShown: () => boolean): MyReportsTab {
     list.replaceChildren(...rows.map(reportCard));
   }
 
-  function reportCard(row: Row): HTMLElement {
+  function reportCard(row: ReportRow): HTMLElement {
     const { local, remote: report } = row;
     const card = el("div", "qws-ch-bug-section");
     const title = report?.title || local?.title || "Untitled report";
@@ -152,8 +150,8 @@ export function createMyReportsTab(isShown: () => boolean): MyReportsTab {
     if (thread.childElementCount) card.appendChild(thread);
 
     if (report.canComment && acceptsComments(report.status)) {
-      if (local) card.appendChild(replyBox({ id: local.id, followToken: local.followToken }));
-      else card.appendChild(el("p", "qws-ch-bug-hint", "Reply from the browser you sent this report from."));
+      const target = replyTarget(row, hasApiKey());
+      card.appendChild(target ? replyBox(target) : el("p", "qws-ch-bug-hint", "Reply from the browser you sent this report from."));
     }
     return card;
   }

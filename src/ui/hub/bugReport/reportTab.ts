@@ -14,7 +14,7 @@ import {
 import { descriptionProblem, prepareBugReport, prepareContext, titleProblem } from "@/bugReport/core/prepare";
 import type { BugReportPayload } from "@/bugReport/core/types";
 import { collectAutoFields, type AutoFields } from "@/bugReport/context";
-import { clearDraft, draftHasText, readDraft, rememberContact, saveDraftSoon, type Draft } from "@/bugReport/draft";
+import { clearDraft, draftHasText, openDraft, rememberContact, saveDraftSoon, type Draft } from "@/bugReport/draft";
 import { BUG_REPORT_PROJECT } from "@/bugReport/project";
 import { sendBugReport } from "@/bugReport/send";
 import { isDiscordActivityContext } from "@/platform/discordCsp";
@@ -134,7 +134,7 @@ export function createReportTab(host: ReportTabHost): ReportTab {
   showUpdateNotice();
   window.addEventListener(MOD_UPDATE_EVENT, showUpdateNotice);
 
-  const draft = readDraft();
+  const draft = openDraft();
   fields.fill(draft);
   if (draftHasText(draft)) {
     const discard = button("Discard", {
@@ -180,10 +180,11 @@ export function createReportTab(host: ReportTabHost): ReportTab {
       const attachments = shots.attachments();
       const payload = toPayload(values, await collectAutoFields(attached.read()), attachments.length);
       lastAttempt = { payload, attachments };
-      // Sent with the follow token kept next to the draft: a retry of this
-      // report after a lost answer gets the same report back. On success the
-      // report joins My reports, and the draft and its token are gone.
-      const result = await sendBugReport(payload, attachments, (step) => {
+      // Sent with the follow token kept next to the draft, saved together
+      // with the text it sends: a retry of this report after a lost answer
+      // gets the same report back. On success the report joins My reports,
+      // and the draft and its token are gone.
+      const result = await sendBugReport(payload, toDraft(values), attachments, (step) => {
         progress.textContent = progressText(step);
       });
       progress.textContent = "";

@@ -12,23 +12,39 @@
 //   - a retry after a lost answer carries the follow token kept next to the
 //     draft and gets the same report back instead of a duplicate, the
 //     screenshots that never left go up, and success forgets the token;
+//   - the draft is saved with its token when Send is pressed, never the token
+//     alone, and a form that opens with no draft drops a token found alone;
 //   - the sent reports live in GM storage, newest first, at most 50;
 //   - the draft survives a reload and is gone once cleared, and its token
 //     stays while it is edited, goes when it is emptied or discarded;
-//   - the console capture installed at boot records the page's errors.
+//   - My reports lists the hub's reports only, and a verified report with no
+//     token here is answered with the API key alone;
+//   - the console capture installed at boot records the page's errors once,
+//     even when the page and a manager's sandbox window both listen, with an
+//     Error inside a logged object kept and a secret-named key hidden.
 //
 // Run with: npm run check:bugreport
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { bugReportClient } from "../src/api/endpoints/bugReports";
-import { listMyReports, submitBugReport, type BugReportAttachment, type BugReportHttpRequest } from "../src/bugReport/core/client";
+import {
+  addReportComment,
+  listMyReports,
+  submitBugReport,
+  type BugReportAttachment,
+  type BugReportHttpRequest,
+} from "../src/bugReport/core/client";
 import { prepareContext } from "../src/bugReport/core/prepare";
-import { isFollowToken, type AttachmentKind, type BugReportPayload } from "../src/bugReport/core/types";
-import { clearDraft, pendingReport, readDraft, rememberContact, saveDraftSoon } from "../src/bugReport/draft";
+import { REDACTED } from "../src/bugReport/core/redact";
+import type { SentReport } from "../src/bugReport/core/sentReports";
+import { isFollowToken, type AttachmentKind, type BugReportPayload, type MyBugReport } from "../src/bugReport/core/types";
+import { clearDraft, openDraft, pendingReport, readDraft, rememberContact, saveDraftSoon, type Draft } from "../src/bugReport/draft";
+import { BUG_REPORT_PROJECT } from "../src/bugReport/project";
+import { replyTarget, reportRows } from "../src/bugReport/reportRows";
 import { sendBugReport } from "../src/bugReport/send";
 import { readSentReports, rememberSentReport } from "../src/bugReport/sentStore";
-import { readHubPath } from "../src/storage/storage";
+import { readHubPath, writeHubPath } from "../src/storage/storage";
 
 let failures = 0;
 
@@ -183,6 +199,9 @@ function payload(): BugReportPayload {
   };
 }
 
+/** What the form holds when Send is pressed, the text payload() is made from. */
+const DRAFT: Draft = { category: "bug", title: payload().title, description: payload().description, feature: "Friends" };
+
 const request = (timeoutMs = 1_000): BugReportHttpRequest => ({
   method: "POST",
   url: "https://ariesmod-api.ariedam.fr/bug-reports",
@@ -315,9 +334,9 @@ async function main(): Promise<void> {
     },
   });
   const shots = [shot("upload"), shot("screen")];
-  saveDraftSoon({ category: "bug", title: payload().title, description: payload().description });
+  saveDraftSoon(DRAFT);
   await sleep(700);
-  const firstTry = await sendBugReport(payload(), shots);
+  const firstTry = await sendBugReport(payload(), DRAFT, shots);
   const firstToken = parseBody(gmCalls[0]?.data)?.followToken;
   check("retry: the first try times out", firstTry.ok === false ? firstTry.error.kind : null, "timeout");
   check("retry: it carries a follow token made in the browser", isFollowToken(firstToken), true);
@@ -326,7 +345,7 @@ async function main(): Promise<void> {
   check("retry: the draft is still there", readDraft().title, payload().title);
   check("retry: the sent list does not have it yet", readSentReports(), []);
 
-  const retry = await sendBugReport(payload(), shots);
+  const retry = await sendBugReport(payload(), DRAFT, shots);
   check("retry: the same token goes again", parseBody(gmCalls[1]?.data)?.followToken, firstToken);
   check(
     "retry: the report the first try created comes back",
@@ -348,27 +367,59 @@ async function main(): Promise<void> {
   // One screenshot had arrived before the page was closed: only the others go.
   reset("1227719606223765687.discordsays.com");
   const resumed = idempotentBackend();
-  const pending = pendingReport();
+  const pending = pendingReport(DRAFT);
   check("the next report gets a new token", isFollowToken(pending.followToken) && pending.followToken !== firstToken, true);
   resumed.push({ id: 950, token: pending.followToken ?? "", description: payload().description, screenshots: 1 });
-  const rest = await sendBugReport(payload(), [shot("upload"), shot("screen"), shot("upload")]);
+  const rest = await sendBugReport(payload(), DRAFT, [shot("upload"), shot("screen"), shot("upload")]);
   check("resume: a report already there comes back", rest.ok === true ? [rest.resumed, rest.report.id, rest.attachmentsSent] : rest, [true, 950, 3]);
   check("resume: only the screenshots the server lacks go up", gmCalls.slice(1).map((call) => parseBody(call.data)?.kind), ["screen", "upload"]);
   check("resume: the server ends up with three", resumed[0]?.screenshots, 3);
 
   // The token belongs to the report in the form, not to the form.
-  const typed = pendingReport().followToken;
-  check("a pending token is kept while nothing is sent", pendingReport().followToken, typed);
-  saveDraftSoon({ title: "Still the same report", description: "Only a few more words this time." });
+  const typed = pendingReport(DRAFT).followToken;
+  check("a pending token is kept while nothing is sent", pendingReport(DRAFT).followToken, typed);
+  const edited: Draft = { title: "Still the same report", description: "Only a few more words this time." };
+  saveDraftSoon(edited);
   await sleep(700);
-  check("editing the draft keeps the token", pendingReport().followToken, typed);
+  check("editing the draft keeps the token", pendingReport(edited).followToken, typed);
   saveDraftSoon({ category: "bug" });
   await sleep(700);
   check("a form emptied by hand drops it", readHubPath("bugReport.pendingToken"), undefined);
-  const kept = pendingReport().followToken;
+  const kept = pendingReport(DRAFT).followToken;
   clearDraft();
   check("discarding the draft drops it too", readHubPath("bugReport.pendingToken"), undefined);
-  check("and the report after that gets a new one", pendingReport().followToken !== kept, true);
+  check("and the report after that gets a new one", pendingReport(DRAFT).followToken !== kept, true);
+  clearDraft();
+
+  // ── Send pressed right after typing, then the page goes away ──────────────
+  // Less than 600 ms after the last key, so the debounced save has not run
+  // yet, and the try is in flight when the tab closes. The draft must be
+  // saved with its token, or the next visit opens an empty form holding a
+  // token that already names a report, and the next, different report comes
+  // back as that one with its text lost.
+  reset("1227719606223765687.discordsays.com");
+  let storedAtRequest: unknown = null;
+  idempotentBackend({
+    loseFirstAnswer: true,
+    onReport: () => {
+      storedAtRequest ??= [readHubPath<Draft>("bugReport.draft")?.title, readHubPath("bugReport.pendingToken")];
+    },
+  });
+  saveDraftSoon({ title: "Typed fast" });
+  const fast: Draft = { category: "bug", title: "Typed fast and sent", description: "Pressed Send right after typing this." };
+  const lost = await sendBugReport({ ...payload(), title: fast.title ?? "", description: fast.description ?? "" }, fast, []);
+  const fastToken = parseBody(gmCalls[0]?.data)?.followToken;
+  check("send: the try is lost on the way", lost.ok === false ? lost.error.kind : null, "timeout");
+  check("send: the draft was saved with its token before the request went out", storedAtRequest, [fast.title, fastToken]);
+  await sleep(700);
+  check("send: the slower save still waiting cannot overwrite it", readHubPath<Draft>("bugReport.draft")?.title, fast.title);
+  check("the next visit finds the draft", openDraft().title, fast.title);
+  check("with its token", readHubPath("bugReport.pendingToken"), fastToken);
+  // Only a write that failed halfway could leave the token alone now.
+  writeHubPath("bugReport.draft", undefined);
+  check("a form opening with no draft", openDraft().title, undefined);
+  check("drops a token found alone", readHubPath("bugReport.pendingToken"), undefined);
+  check("so the report written next gets its own", pendingReport(DRAFT).followToken !== fastToken, true);
   clearDraft();
   gm.delete("mgch_bug_reports_sent");
   gm.delete("aries_api_key");
@@ -415,10 +466,66 @@ async function main(): Promise<void> {
   await sleep(700);
   check("cleared before it was saved stays cleared", readDraft().title, undefined);
 
+  // ── My reports: the hub's reports, and a reply without a token ────────────
+  const remoteReport = (id: number, project: string): MyBugReport => ({
+    id,
+    ref: `BR-${id}`,
+    project,
+    title: `remote ${id}`,
+    status: "needs_info",
+    statusLabel: "Need more info",
+    modVersion: null,
+    fixedInVersion: "4.0.6",
+    publicReply: null,
+    publicReplyAt: null,
+    createdAt: "",
+    updatedAt: "",
+    comments: [],
+    canComment: true,
+  });
+  // The API key is the player's, shared by every mod they log in to, so /mine
+  // also answers with their Arie's Mod and MG-mod reports.
+  const remote = new Map(
+    [remoteReport(10, "community-hub"), remoteReport(11, "community-hub"), remoteReport(50, "aries-mod"), remoteReport(51, "mg-mod")].map(
+      (report): [number, MyBugReport] => [report.id, report],
+    ),
+  );
+  const sentHere: SentReport = { id: 10, ref: "BR-10", followToken: TOKEN, title: "report 10", createdAt: "2026-10-23T12:00:00.000Z" };
+  const rows = reportRows([sentHere], remote, BUG_REPORT_PROJECT.id);
+  check(
+    "My reports lists the reports sent from here, then the hub's verified ones",
+    rows.map((row) => [row.id, row.local !== null]),
+    [
+      [10, true],
+      [11, false],
+    ],
+  );
+  check("a verified report sent from another mod is left out", rows.some((row) => row.id === 50 || row.id === 51), false);
+  check("a reply on a report sent from here goes with its token", replyTarget(rows[0], false), { id: 10, followToken: TOKEN });
+  // Reinstalled, or another device: the token is gone, the key still names the author.
+  const keyOnly = replyTarget(rows[1], true);
+  check("a verified report with no token here is answered with the key alone", keyOnly, { id: 11, followToken: "" });
+  check("with no key either, there is nothing to answer it with", replyTarget(rows[1], false), null);
+  gm.set("aries_api_key", API_KEY);
+  reset("magicgarden.gg");
+  fetchReplies = [{ status: 201, body: { ok: true } }];
+  const answered = keyOnly ? await addReportComment(bugReportClient, keyOnly, "Here is what you asked for") : null;
+  check("that reply goes out", answered?.ok, true);
+  check(
+    "to the report, signed with the key and no token",
+    [fetchCalls[0]?.url, fetchCalls[0]?.headers?.Authorization, parseBody(fetchCalls[0]?.body)?.followToken],
+    ["https://ariesmod-api.ariedam.fr/bug-reports/11/comments", `Bearer ${API_KEY}`, ""],
+  );
+  gm.delete("aries_api_key");
+
   // ── Console capture installed at boot ──────────────────────────────────────
-  // The page window is read when the module loads, so it comes after the stubs.
-  const { diagnostics, installDiagnostics, recordBreadcrumb } = await import("../src/platform/diagnostics");
+  // The page window is read when the module loads, so it comes after the
+  // stubs. As under a manager that sandboxes the script, the page window is
+  // another object than the script's, and both hand their listeners to the
+  // one DOM window, which gives both the same event.
   const pageConsole = { error: (..._args: unknown[]) => {}, warn: (..._args: unknown[]) => {} };
+  g.unsafeWindow = { console: pageConsole, addEventListener: g.addEventListener, removeEventListener: g.removeEventListener };
+  const { diagnostics, installDiagnostics, recordBreadcrumb } = await import("../src/platform/diagnostics");
   const realConsole = g.console;
   g.console = pageConsole;
   try {
@@ -426,18 +533,40 @@ async function main(): Promise<void> {
     installDiagnostics();
     pageConsole.error("[CommunityHub] renderCommunityHub failed:", new TypeError("x is undefined"));
     pageConsole.warn("headers", { Authorization: `Bearer ${API_KEY}` });
+    pageConsole.warn("[CommunityHub] avatar failed", { url: "avatar.png", error: new Error("decode failed") });
+    pageConsole.error("login failed", { status: 401, apiKey: API_KEY });
   } finally {
     g.console = realConsole;
   }
-  for (const cb of listeners.get("unhandledrejection") ?? []) cb({ reason: new Error("stream closed") });
+  check("the page and the sandbox window both listen", [listeners.get("error")?.length, listeners.get("unhandledrejection")?.length], [2, 2]);
+  const uncaught = { error: new TypeError("boom at boot") };
+  for (const cb of listeners.get("error") ?? []) cb(uncaught);
+  const rejection = { reason: new Error("stream closed") };
+  for (const cb of listeners.get("unhandledrejection") ?? []) cb(rejection);
   recordBreadcrumb("opened hub tab messages");
   const logs = diagnostics.logs();
-  check("installed once, each line recorded once", logs.length, 3);
-  check("an error is recorded with its message", logs[0]?.msg.startsWith("[CommunityHub] renderCommunityHub failed: TypeError: x is undefined"), true);
-  check("a rejected promise is recorded", logs[2]?.msg.startsWith("Unhandled rejection: Error: stream closed"), true);
+  const line = (start: string) => logs.find((entry) => entry.msg.startsWith(start));
+  check("installed once, each line recorded once", logs.length, 6);
+  check("an error is recorded with its message", !!line("[CommunityHub] renderCommunityHub failed: TypeError: x is undefined"), true);
+  check("an uncaught error heard through both windows is recorded once", line("Uncaught TypeError: boom at boot")?.repeat ?? 1, 1);
+  check("a rejected promise too", line("Unhandled rejection: Error: stream closed")?.repeat ?? 1, 1);
+  const nested = line("[CommunityHub] avatar failed")?.msg ?? "";
+  check("an Error inside a logged object keeps its message", nested.includes('"error":"Error: decode failed'), true);
+  const login = line("login failed")?.msg ?? "";
+  check("a secret-named key in a logged object is hidden", [login.includes(API_KEY), login.includes(`"apiKey":"${REDACTED}"`)], [false, true]);
   check("breadcrumbs are kept", diagnostics.breadcrumbs().map((c) => c.msg), ["opened hub tab messages"]);
   const prepared = JSON.stringify(prepareContext({ logs }));
   check("a key logged by mistake never leaves", prepared.includes(API_KEY), false);
+
+  // ── The tabs use the rules above ───────────────────────────────────────────
+  // Both tabs build DOM, which this suite has none of: their source is read instead.
+  const tabSource = (name: string) => readFileSync(join(process.cwd(), "src", "ui", "hub", "bugReport", name), "utf8");
+  const reportTab = tabSource("reportTab.ts");
+  check("the New report tab opens its draft with openDraft", /\bopenDraft\(\)/.test(reportTab) && !/\breadDraft\(/.test(reportTab), true);
+  check("and saves the form's text with the token it sends", /sendBugReport\(payload,\s*toDraft\(values\)/.test(reportTab), true);
+  const myReports = tabSource("myReportsTab.ts");
+  check("My reports builds its rows for the hub only", /reportRows\([^)]*BUG_REPORT_PROJECT\.id\)/.test(myReports), true);
+  check("and answers each one through replyTarget", /replyTarget\(row,\s*hasApiKey\(\)\)/.test(myReports), true);
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed`);
