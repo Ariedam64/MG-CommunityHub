@@ -18,6 +18,7 @@ const ARIES_STORAGE_KEY = "aries_mod";
 const API_KEY_STORAGE_KEY = "aries_api_key";
 const AUTH_DECLINED_STORAGE_KEY = "aries_auth_declined";
 const SEEN_ROOM_PRIVACY_NOTICE_KEY = "aries_seen_room_privacy_notice";
+const SENT_BUG_REPORTS_KEY = "mgch_bug_reports_sent";
 
 type AnyRecord = Record<string, any>;
 
@@ -236,5 +237,38 @@ export function markRoomPrivacyNoticeSeen(): void {
     getHostStorage()?.setItem(SEEN_ROOM_PRIVACY_NOTICE_KEY, "1");
   } catch {
     /* ignore */
+  }
+}
+
+/* --------------------------- Sent bug reports --------------------------- */
+
+/**
+ * The bug reports sent from this browser, each with the follow token that
+ * reads its status back (src/bugReport/sentStore.ts checks the shape). In GM
+ * storage like the API key: one list for every site the script runs on, so a
+ * report sent from Discord also shows up on the web.
+ */
+export function readSentBugReports(): unknown {
+  try {
+    const raw =
+      typeof GM_getValue === "function"
+        ? GM_getValue(SENT_BUG_REPORTS_KEY, null)
+        : getHostStorage()?.getItem(SENT_BUG_REPORTS_KEY);
+    return typeof raw === "string" ? parseSafe(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSentBugReports(list: unknown[]): void {
+  try {
+    const raw = JSON.stringify(list);
+    if (typeof GM_setValue === "function") {
+      GM_setValue(SENT_BUG_REPORTS_KEY, raw);
+      return;
+    }
+    getHostStorage()?.setItem(SENT_BUG_REPORTS_KEY, raw);
+  } catch {
+    /* ignore persistence errors */
   }
 }

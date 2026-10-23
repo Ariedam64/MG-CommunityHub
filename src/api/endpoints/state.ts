@@ -126,7 +126,7 @@ function getSlotsArray(state: any): any[] {
  * repli. Renvoie null tant que l'identité n'est pas connue : tout ce qui
  * remonte au serveur doit s'arrêter là plutôt que de deviner.
  */
-async function getMyAccountId(state?: any): Promise<string | null> {
+export async function getMyAccountId(state?: any): Promise<string | null> {
   try {
     const me = await playerAtom.get();
     const snapshot = state ?? (await Atoms.root.state.get());

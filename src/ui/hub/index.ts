@@ -21,6 +21,8 @@ import {
 import { createAuthGate } from "./authGate";
 import { createRoomPrivacyNotice, hasSeenRoomPrivacyNotice } from "./roomPrivacyNotice";
 import { createKofiModal, createKofiNavEntry } from "./kofiModal";
+import { createBugReportModal, createBugReportNavEntry, type BugReportModal } from "./bugReport/modal";
+import { recordBreadcrumb } from "@/platform/diagnostics";
 import { MOD_UPDATE_EVENT, isUpdateAvailable, startUpdateWatch } from "@/platform/modUpdate";
 import "@/buildFlags";
 
@@ -205,6 +207,8 @@ class CommunityHub {
   private hubButtonFloating: CommunityHubButtonFloatingController | null = null;
   private kofiModal: HTMLElement | null = null;
   private kofiNavBtn: HTMLButtonElement | null = null;
+  private bugReportModal: BugReportModal | null = null;
+  private bugReportNavBtn: HTMLButtonElement | null = null;
   // Safety flags to prevent stale/destroyed instances from acting on events
   private destroyed = false;
   private _isSelfDispatching = false;
@@ -588,10 +592,12 @@ class CommunityHub {
       this.tabs.set(def.id, tab);
     }
 
-    // Ko-fi support button — pushed to the bottom of the nav
+    // Ko-fi support button, pushed to the bottom of the nav, with Report a
+    // bug just above it
     const { spacer, sep, btn: kofiBtn } = createKofiNavEntry(() => this.openKofiModal());
     this.kofiNavBtn = kofiBtn;
-    this.nav.append(spacer, sep, kofiBtn);
+    this.bugReportNavBtn = createBugReportNavEntry(() => this.openBugReportModal());
+    this.nav.append(spacer, sep, this.bugReportNavBtn, kofiBtn);
   }
 
   private openKofiModal(): void {
@@ -604,6 +610,16 @@ class CommunityHub {
     this.panel.appendChild(this.kofiModal);
   }
 
+  // Closing only hides the modal: an unsent report and its screenshots stay
+  // until the player comes back.
+  private openBugReportModal(): void {
+    if (!this.bugReportModal) {
+      this.bugReportModal = createBugReportModal(() => this.bugReportModal?.hide());
+      this.panel.appendChild(this.bugReportModal.root);
+    }
+    this.bugReportModal.show();
+  }
+
   private switchTab(id: TabId): void {
     if (this.activeTab === id) return;
 
@@ -612,6 +628,7 @@ class CommunityHub {
 
     this.activeTab = id;
     window.__qws_community_hub_last_tab = id;
+    recordBreadcrumb(`opened hub tab ${id}`);
 
     this.tabs.get(id)?.show?.();
     this.tabButtons.get(id)?.classList.add("active");
@@ -694,10 +711,11 @@ class CommunityHub {
         btn.style.pointerEvents = "none";
         btn.style.opacity = "0.5";
       }
-      // Ko-fi button is unrelated to auth — keep it fully interactive
-      if (this.kofiNavBtn) {
-        this.kofiNavBtn.style.pointerEvents = "auto";
-        this.kofiNavBtn.style.opacity = "1";
+      // Ko-fi and Report a bug are unrelated to auth: keep them fully interactive
+      for (const btn of [this.kofiNavBtn, this.bugReportNavBtn]) {
+        if (!btn) continue;
+        btn.style.pointerEvents = "auto";
+        btn.style.opacity = "1";
       }
     }
   }
@@ -753,6 +771,12 @@ class CommunityHub {
     if (this.kofiModal) {
       this.kofiModal.remove();
       this.kofiModal = null;
+    }
+
+    // Cleanup Report a bug modal (its key blocker and refresh timer too)
+    if (this.bugReportModal) {
+      this.bugReportModal.destroy();
+      this.bugReportModal = null;
     }
 
     for (const tab of this.tabs.values()) {

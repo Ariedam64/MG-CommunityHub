@@ -1,7 +1,8 @@
 // src/main.ts
 // MG Community Hub — standalone userscript entry point.
 // Boot order matters:
-//   1. OAuth bridge page short-circuit (auth popup callback).
+//   1. OAuth bridge page short-circuit (auth popup callback), then the
+//      console capture for bug reports, as early as possible.
 //   2. Discord Activity CSP interceptor.
 //   3. Game data fetch (shared with Arie's Mod via window.__MG_DATA_STATE__).
 //   4. Toolbar button + hub panel (self-injecting, waits for the game UI).
@@ -23,12 +24,17 @@ import { MGData } from "@/data/dynamic";
 import { warmupSpriteCache } from "@/ui/spriteIcons";
 import { tos } from "@/game/tileObjectSystem";
 import { renderCommunityHub } from "@/ui/hub";
+import { installDiagnostics } from "@/platform/diagnostics";
+import { startBugReportBreadcrumbs } from "@/bugReport/breadcrumbs";
 
 (function () {
   "use strict";
 
   // Auth popup callback page: capture the API key and stop.
   if (initAuthBridgeIfNeeded()) return;
+
+  // First, so a bug report can show the errors from the very start of the session.
+  installDiagnostics();
 
   if (isDiscordActivityContext()) {
     installEmojiDataFetchInterceptor();
@@ -79,4 +85,7 @@ import { renderCommunityHub } from "@/ui/hub";
   // Backend sync: heartbeat (collect-state) + SSE/long-poll streams.
   startPlayerStateReportingWhenGameReady();
   initializeStreamsWhenReady();
+
+  // What a bug report says the player did just before sending it.
+  startBugReportBreadcrumbs();
 })();
