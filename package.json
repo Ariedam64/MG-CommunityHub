@@ -13,7 +13,8 @@
     "check:identity": "esbuild scripts/checkPlayerIdentity.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkPlayerIdentity.cjs --log-level=error && node node_modules/.cache/checkPlayerIdentity.cjs",
     "check:modalstate": "esbuild scripts/checkModalState.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkModalState.cjs --log-level=error && node node_modules/.cache/checkModalState.cjs",
     "check:discordframes": "esbuild scripts/checkDiscordFrames.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkDiscordFrames.cjs --log-level=error && node node_modules/.cache/checkDiscordFrames.cjs",
-    "check:bugreport": "esbuild scripts/checkBugReport.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkBugReport.cjs --log-level=error && node node_modules/.cache/checkBugReport.cjs"
+    "check:bugreport": "esbuild scripts/checkBugReport.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkBugReport.cjs --log-level=error && node node_modules/.cache/checkBugReport.cjs",
+    "check:bootdom": "esbuild scripts/checkBootDom.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/checkBootDom.cjs --log-level=error && node node_modules/.cache/checkBootDom.cjs"
   },
   "devDependencies": {
     "@types/tampermonkey": "^5.0.4",

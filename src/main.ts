@@ -76,7 +76,9 @@ import { startBugReportBreadcrumbs } from "@/bugReport/breadcrumbs";
       console.error("[CommunityHub] renderCommunityHub failed:", e);
     }
   };
-  if (document.head) {
+  // At document-start the page can already have a <head> but no <body> yet,
+  // and the hub mounts its button and panel into the body.
+  if (document.body) {
     void bootHub();
   } else {
     document.addEventListener("DOMContentLoaded", () => void bootHub(), { once: true });
