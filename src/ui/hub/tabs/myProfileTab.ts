@@ -1,6 +1,7 @@
 import { getCachedMyProfile, updateCachedMyProfilePrivacy } from "@/api/cache/welcome";
-import { onWelcome, updatePrivacy } from "@/api";
+import { fetchPrivacy, onWelcome, updatePrivacy } from "@/api";
 import type { PlayerPrivacyPayload } from "@/api/types";
+import { readHideNameInRoomLists } from "@/api/roomPrivacy";
 import { createAvatarElement } from "./playerAvatar";
 import { style, createPlayerBadges } from "../shared";
 
@@ -236,6 +237,9 @@ export function createMyProfileTab() {
     return row;
   };
 
+  // GET /privacy is asked at most once per tab for hideNameInRoomLists
+  let hideNamePrivacyFetched = false;
+
   // Privacy settings section
   const createPrivacySection = () => {
     const myProfile = getCachedMyProfile();
@@ -280,7 +284,27 @@ export function createMyProfileTab() {
     });
 
     // Room Visibility uses a dedicated Public/Private segmented control
-    settingsList.appendChild(createRoomVisibilitySetting(myProfile.privacy.hideRoomFromPublicList as boolean));
+    const roomVisibilityRow = createRoomVisibilitySetting(myProfile.privacy.hideRoomFromPublicList as boolean);
+    settingsList.appendChild(roomVisibilityRow);
+
+    // Hide name in room lists: only shown once the backend sends the key
+    const hideName = readHideNameInRoomLists(myProfile.privacy);
+    if (hideName !== null) {
+      settingsList.appendChild(createHideNameSetting(hideName));
+    } else if (!hideNamePrivacyFetched) {
+      // The key may be in GET /privacy before it reaches the welcome payload
+      hideNamePrivacyFetched = true;
+      void fetchPrivacy().then((result) => {
+        const fetched = readHideNameInRoomLists(result);
+        if (result === null || fetched === null) return;
+        const current = getCachedMyProfile();
+        if (!current) return;
+        updateCachedMyProfilePrivacy({ ...current.privacy, ...result });
+        if (roomVisibilityRow.isConnected) {
+          roomVisibilityRow.after(createHideNameSetting(fetched));
+        }
+      }).catch(() => {});
+    }
 
     const privacySettings = [
       { key: "showGarden", label: "Garden" },
@@ -359,8 +383,54 @@ export function createMyProfileTab() {
     return row;
   };
 
-  // Create toggle switch component
-  const createToggleSwitch = (initialValue: boolean, onChange: (value: boolean) => void) => {
+  // "Hide my name and avatar in room lists" row, reverts if the save fails
+  const createHideNameSetting = (initialValue: boolean) => {
+    const row = document.createElement("div");
+    style(row, {
+      display: "flex",
+      alignItems: "center",
+      gap: "12px",
+      padding: "12px",
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.06)",
+      borderRadius: "8px",
+      transition: "all 120ms ease",
+    });
+
+    row.onmouseenter = () => style(row, { background: "rgba(255,255,255,0.04)", borderColor: "rgba(94,234,212,0.15)" });
+    row.onmouseleave = () => style(row, { background: "rgba(255,255,255,0.02)", borderColor: "rgba(255,255,255,0.06)" });
+
+    const textCol = document.createElement("div");
+    style(textCol, { flex: "1", display: "flex", flexDirection: "column", gap: "2px" });
+
+    const labelEl = document.createElement("div");
+    style(labelEl, { fontSize: "13px", fontWeight: "600", color: "#e7eef7" });
+    labelEl.textContent = "Hide my name and avatar in room lists";
+
+    const hintEl = document.createElement("div");
+    style(hintEl, { fontSize: "11px", color: "rgba(226,232,240,0.5)", lineHeight: "1.4" });
+    hintEl.textContent =
+      "Shows you as Anonymous in the hub's public room lists. Players in the same room still see your name in game.";
+
+    textCol.append(labelEl, hintEl);
+
+    const toggle = createToggleSwitch(initialValue, async (newValue) => {
+      const result = await updatePrivacy({ hideNameInRoomLists: newValue });
+      if (!result) return false;
+      updateCachedMyProfilePrivacy(result);
+      return true;
+    });
+
+    row.append(textCol, toggle);
+    return row;
+  };
+
+  // Create toggle switch component. If onChange resolves to false, the
+  // switch goes back to its previous state.
+  const createToggleSwitch = (
+    initialValue: boolean,
+    onChange: (value: boolean) => void | boolean | Promise<void | boolean>,
+  ) => {
     let isOn = initialValue;
 
     const container = document.createElement("div");
@@ -404,7 +474,13 @@ export function createMyProfileTab() {
     container.onclick = () => {
       isOn = !isOn;
       updateVisuals();
-      onChange(isOn);
+      const requested = isOn;
+      void Promise.resolve(onChange(requested)).then((accepted) => {
+        if (accepted === false && isOn === requested) {
+          isOn = !requested;
+          updateVisuals();
+        }
+      }).catch(() => {});
     };
 
     return container;

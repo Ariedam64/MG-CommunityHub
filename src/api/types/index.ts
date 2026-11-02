@@ -64,6 +64,8 @@ export interface PlayerPrivacyPayload {
   showJournal: boolean;
   hideRoomFromPublicList: boolean;
   showStats: boolean;
+  /** Absent while the backend does not know the setting. */
+  hideNameInRoomLists?: boolean;
 }
 
 export interface PlayerView {
@@ -522,6 +524,8 @@ export interface PrivacySettings {
   showJournal: boolean;
   showStats: boolean;
   hideRoomFromPublicList: boolean;
+  /** Absent while the backend does not know the setting. */
+  hideNameInRoomLists?: boolean;
 }
 
 export interface MyProfile {

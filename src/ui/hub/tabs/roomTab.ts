@@ -1,5 +1,6 @@
 import { fetchAvailableRooms, getCachedPublicRooms, onWelcome } from "@/api";
 import type { Room } from "@/api";
+import { describeRoomSlot } from "@/api/roomPrivacy";
 import { style, ensureSharedStyles, formatTimestamp } from "../shared";
 
 export function createRoomTab() {
@@ -248,24 +249,22 @@ export function createRoomTab() {
     const userSlots = room.userSlots || [];
     for (let i = 0; i < maxSlots; i++) {
       const avatarSlot = document.createElement("div");
-      const slotData = userSlots[i] as any;
+      // Accepts both avatarUrl (camelCase from API) and avatar_url (snake_case from welcome event)
+      const slotView = describeRoomSlot(userSlots[i] as any, i, room.playersCount);
 
-      // Accept both avatarUrl (camelCase from API) and avatar_url (snake_case from welcome event)
-      const avatarUrl = slotData?.avatarUrl || slotData?.avatar_url;
-
-      if (slotData && avatarUrl) {
+      if (slotView.kind === "avatar") {
         // Player present with avatar
         style(avatarSlot, {
           width: "28px",
           height: "28px",
           borderRadius: "50%",
-          background: `url(${avatarUrl}) center/cover`,
+          background: `url(${slotView.avatarUrl}) center/cover`,
           border: "2px solid rgba(94,234,212,0.3)",
           flexShrink: "0",
         });
-        avatarSlot.title = slotData.name || "Player";
-      } else if (i < room.playersCount) {
-        // Player present but no avatar data
+        if (slotView.title) avatarSlot.title = slotView.title;
+      } else if (slotView.kind === "placeholder") {
+        // Player present but no avatar (or hidden as Anonymous)
         style(avatarSlot, {
           width: "28px",
           height: "28px",
@@ -274,6 +273,7 @@ export function createRoomTab() {
           border: "2px solid rgba(94,234,212,0.3)",
           flexShrink: "0",
         });
+        if (slotView.title) avatarSlot.title = slotView.title;
       } else {
         // Empty slot
         style(avatarSlot, {
