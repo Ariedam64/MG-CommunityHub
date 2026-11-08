@@ -252,11 +252,16 @@ export async function buildPlayerStatePayload(
       (state?.roomId as string) ??
       null;
 
-    let playersCount =
-      normalizedPlayers.length > 0 ? normalizedPlayers.length : slots.length;
+    let playersCount = clampPlayers(
+      normalizedPlayers.length > 0 ? normalizedPlayers.length : slots.length,
+    );
     try {
-      const atomValue = await Atoms.server.numPlayers.get();
-      playersCount = clampPlayers(atomValue);
+      // numPlayersAtom n'existe plus depuis le jeu 1973 : la lecture renvoie
+      // alors undefined sans lever, et ne doit pas écraser le compte dérivé.
+      const atomValue: unknown = await Atoms.server.numPlayers.get();
+      if (typeof atomValue === "number" && Number.isFinite(atomValue)) {
+        playersCount = clampPlayers(atomValue);
+      }
     } catch {
       // fallback sur derived count
     }
